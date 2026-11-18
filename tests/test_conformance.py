@@ -146,6 +146,16 @@ def test_service_decay_prefers_fresh(make):
     assert hits[0]["value"] == "喜欢暖木和自然光", "新鲜的该排前面"
 
 
+def test_recall_hits_single_char_key(make):
+    """单字 key（人名"周"）也要能被问到：key 命中加权，不许冤枉地说想不起来。"""
+    s = make()
+    mem = MemoryService(s, designer="heima")
+    mem.remember("note", "周", "开发时间", confidence=0.9, ts=time.time())
+    assert mem.recall("周讲了什么"), "完整 key 在查询里，必须命中"
+    assert mem.recall("周"), "短查询落在 key 里，必须命中"
+    assert not mem.recall("李讲了什么"), "不相关的人不能乱中"
+
+
 def test_sqlite_reopen_after_close():
     """连接被关后自动重开：后台线程拿到旧 store 不鞭尸。"""
     tmp = Path(tempfile.mkdtemp()) / "r.db"
@@ -171,7 +181,8 @@ def main():
     n_pass = n_fail = 0
     backend_tests = (test_mem_isolation, test_op_chain, test_utterances_prune,
                      test_snapshot_ts_is_real, test_purge_designer,
-                     test_service_evidence_chain, test_service_decay_prefers_fresh)
+                     test_service_evidence_chain, test_service_decay_prefers_fresh,
+                     test_recall_hits_single_char_key)
     for name, make in _BACKENDS:
         for fn in backend_tests:
             try:

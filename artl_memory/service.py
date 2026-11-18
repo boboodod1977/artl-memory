@@ -92,17 +92,29 @@ class MemoryService:
 
     def recall(self, query: str, scope: str = "", limit: int = 5,
                kind: str = "") -> list:
-        """O(n) 全量打分，为可解释性刻意不做索引；适用万级以下条目。"""
+        """O(n) 全量打分，为可解释性刻意不做索引；适用万级以下条目。
+
+        打分因子全在明处：bigram 重叠 × 把握度 × 时间衰减，外加一条
+        key 命中加权——查询里带着完整的 key（如人名"周"），或查询很短
+        且落在 key 里（如"周"），直接给强分。没有这条，单字 key 永远
+        凑不出 bigram，"周讲了什么"会冤枉地说想不起来。
+        """
         rows = self._items(scope=scope, kind=kind, active_only=True, limit=2000)
         if not rows:
             return []
-        q = _bigrams(query) if str(query or "").strip() else set()
+        query_str = re.sub(r"\s+", "", str(query or ""))
+        q = _bigrams(query_str) if query_str else set()
         now = float(self._clock())
         scored = []
         for row in rows:
-            body = "%s %s" % (row.get("key") or "", row.get("value") or "")
+            key = str(row.get("key") or "")
+            body = "%s %s" % (key, row.get("value") or "")
             f = _bigrams(body)
             overlap = len(q & f) if q else 1
+            # key 命中加权：完整 key 出现在查询里，或短查询落在 key 里
+            if key and query_str and (key in query_str
+                                      or (len(query_str) <= 2 and query_str in key)):
+                overlap += 2 * max(1, len(_bigrams(key)))
             if q and overlap == 0:
                 continue
             age = max(0.0, now - float(row.get("valid_from") or now)) / 86400.0
