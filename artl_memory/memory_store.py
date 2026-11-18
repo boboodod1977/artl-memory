@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import copy
 import time
 from typing import Any
 
@@ -96,7 +97,9 @@ class InMemoryStore:
         return rows[-limit:]
 
     def count_utterances(self, designer: str, days: int | None = None) -> int:
-        cutoff = time.time() - (days or 3650) * 86400
+        if days is None:
+            return sum(1 for r in self._utt if r.get("designer") == designer)
+        cutoff = time.time() - days * 86400
         return sum(1 for r in self._utt
                    if r.get("designer") == designer and float(r.get("ts") or 0) >= cutoff)
 
@@ -134,7 +137,8 @@ class InMemoryStore:
         return {k: v["value"] for k, v in rows.items()}
 
     def snapshot_mem(self, owner, designer, project=None) -> dict:
-        return dict(self._mem.get((owner, designer, project), {}))
+        # 深拷贝：快照是给人看的，改动快照不许污染库（SQLite 版天然是新对象）
+        return copy.deepcopy(self._mem.get((owner, designer, project), {}))
 
     # ---- 统一记忆条目（证据链） ----------------------------------------------
     def add_memory_item(self, item: dict) -> None:

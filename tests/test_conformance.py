@@ -95,6 +95,23 @@ def test_snapshot_ts_is_real(make):
     assert ts >= before, "时间戳要真实，排查'这条是什么时候记住的'全靠它"
 
 
+def test_snapshot_cannot_pollute_store(make):
+    """改动快照不许污染库：快照是给人看的，不是给库留的后门。"""
+    s = make()
+    s.set_mem("core", "heima", None, "k", {"nested": 1})
+    s.snapshot_mem("core", "heima", None)["k"]["value"]["nested"] = 999
+    assert s.get_mem("core", "heima", None, "k") == {"nested": 1}
+
+
+def test_count_utterances_none_means_all(make):
+    """days=None 语义是"全部"，不许暗中被截成 N 天；days=0 两后端同口径。"""
+    s = make()
+    s.add_utterance("heima", {"id": "old", "who": "w", "text": "t",
+                              "ts": time.time() - 4000 * 86400})
+    assert s.count_utterances("heima", days=None) == 1, "十年前的也算全部"
+    assert s.count_utterances("heima", days=0) == 0, "days=0 就是只看此刻之后"
+
+
 def test_purge_designer(make):
     """一键抹掉一个人：五类数据全清，别人不受影响。"""
     s = make()
@@ -180,7 +197,8 @@ def test_sqlite_schema_version():
 def main():
     n_pass = n_fail = 0
     backend_tests = (test_mem_isolation, test_op_chain, test_utterances_prune,
-                     test_snapshot_ts_is_real, test_purge_designer,
+                     test_snapshot_ts_is_real, test_snapshot_cannot_pollute_store,
+                     test_count_utterances_none_means_all, test_purge_designer,
                      test_service_evidence_chain, test_service_decay_prefers_fresh,
                      test_recall_hits_single_char_key)
     for name, make in _BACKENDS:
