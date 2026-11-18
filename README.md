@@ -56,6 +56,7 @@ python examples/two_people.py
 - `InMemoryStore`：测试与试用（非线程安全）；`SqliteMemoryStore`：WAL、
   单连接、连接被关自动重开、坏文件自动隔离、schema 带版本号。
 - 同一套一致性测试跑两个后端：`python tests/test_conformance.py`（也兼容 pytest）
+- 对抗性测试管"没说也不许炸"：`python tests/test_adversarial.py`
 
 ## 边界（写在明处）
 
