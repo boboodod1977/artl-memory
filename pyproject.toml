@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "artl-memory"
+version = "0.1.0"
+description = "The multi-person memory layer for agents: verbatim utterances, per-person isolation, evidence chain, confidence. It remembers everyone in the room — separately."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+keywords = ["agent", "memory", "multi-person", "voiceprint", "local-first", "sqlite"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Libraries",
+]
+
+# 零硬依赖：sqlite3 是标准库。这是刻意的——记忆层不该拖着一堆包进门。
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/ARTL-family/artl-memory"
+
+[tool.setuptools.packages.find]
+include = ["artl_memory*"]
+
+[tool.setuptools.package-data]
+artl_memory = ["py.typed"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 110
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["artl_memory"]
+ignore_missing_imports = true
+check_untyped_defs = true

@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 本地数据库与现场文件
+*.db
+*.db-wal
+*.db-shm
+*.corrupt-*
+
+# 环境
+.venv/
+venv/
+.env
+
+# 系统
+.DS_Store
+Thumbs.db
