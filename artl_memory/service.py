@@ -44,7 +44,8 @@ def _bigrams(s: str) -> set:
 
 class MemoryService:
     def __init__(self, store, designer: str, project: str = "", clock=time.time,
-                 recall_window: int = 10000):
+                 recall_window: int = 10000, recall_scorer=None,
+                 semantic_weight: float = 3.0, semantic_min: float = 0.5):
         self._store = store
         self.designer = str(designer or "")
         self.project = str(project or "")
@@ -52,6 +53,14 @@ class MemoryService:
         # 召回时的最大扫描条数。README 承诺"适用万级以下"，默认值对齐这个
         # 承诺；超过这个规模请显式调大，而不是被静默截断。
         self.recall_window = int(recall_window) if recall_window else 10000
+        # 可选语义插口：callable(query, rows) -> {id: 0..1 分数}。
+        # 它只能给库里已有的候选行改排序分——造不出新记忆，
+        # 证据链和"它为什么想起这条"的可解释性不被污染。
+        self._scorer = recall_scorer
+        # semantic_weight：语义满分相当于几个 bigram 命中；semantic_min：
+        # 字词零重叠时，语义分达到这个门槛才把条目捞进结果。
+        self.semantic_weight = float(semantic_weight)
+        self.semantic_min = float(semantic_min)
         # remember 的 查重-失效-写入 是一整条 check-then-act：不加锁，
         # 两个线程同 key 并发会各写一条、supersedes 全断。
         self._lock = threading.RLock()
@@ -162,12 +171,20 @@ class MemoryService:
                kind: str = "") -> list:
         """O(n) 全量打分，为可解释性刻意不做索引；适用万级以下条目。
 
-        打分因子全在明处：bigram 重叠 × 把握度 × 时间衰减，外加一条
-        key 命中加权——查询里带着完整的 key（如人名"周"），或查询很短
-        且落在 key 里（如"周"），给小分保命。注意单字 key 只加 0.5：
-        够它不被 overlap==0 筛掉，但压不过正文的真实命中——否则
-        "周末讲什么"会把 key="周" 的无关条目顶到第一。
-        扫描上限是 self.recall_window（默认一万，可显式调大），不再硬编码。
+        打分因子全在明处：相关度 × 把握度 × 时间衰减。相关度 = 字词分
+        （bigram 重叠 + key 命中加权）+ 语义分（可选 recall_scorer，
+        满分相当于 semantic_weight 个 bigram）。key 命中加权：查询里
+        带着完整的 key（如人名"周"），或查询很短且落在 key 里，给小分
+        保命。注意单字 key 只加 0.5：够它不被 overlap==0 筛掉，但压不过
+        正文的真实命中——否则"周末讲什么"会把 key="周" 的无关条目顶到第一。
+
+        字词零重叠的条目，只有语义分 ≥ semantic_min 才会被捞进来——
+        换说法召回走的就是这条路，没装 scorer 时行为和以前一模一样。
+
+        扫描上限是 self.recall_window（默认一万，可显式调大），不再硬编码；
+        窗口之外，每个非空 key 的最新有效条目保底参与打分——"这个槽现在
+        的值"不许被流水挤掉。每条结果带 recall_detail：word / semantic /
+        confidence / decay 四个因子分列，"为什么想起这条"随时可查。
         """
         if int(limit) <= 0:
             return []
@@ -184,8 +201,31 @@ class MemoryService:
             warnings.warn("recall 扫描已满 recall_window=%d，最老的条目可能未参与打分；"
                           "请调大 MemoryService(recall_window=...)" % self.recall_window,
                           RuntimeWarning, stacklevel=2)
+        # 槽位保底：每个非空 key 的最新有效条目永远参与打分，不受窗口截断
+        floor = self._store.memory_items(self.designer, self.project,
+                                         scope=scope, kind=kind,
+                                         active_only=True,
+                                         per_key_latest=True)
+        seen = {str(r.get("id") or "") for r in rows}
+        rows = list(rows) + [r for r in floor
+                             if str(r.get("id") or "") not in seen]
         if not rows:
             return []
+        # 语义插口：scorer 只能给已有候选打分，给陌生 id 打分直接丢弃——
+        # 重排可以，注入不行。scorer 挂了退化为纯字词，召回不许跟着死。
+        sem: dict = {}
+        if self._scorer is not None:
+            try:
+                raw = self._scorer(query_str, [dict(r) for r in rows]) or {}
+                for rid, s in dict(raw).items():
+                    try:
+                        sem[str(rid)] = min(1.0, max(0.0, float(s)))
+                    except (TypeError, ValueError):
+                        continue
+            except Exception as exc:
+                warnings.warn("recall_scorer 出错（%s），本轮退化为纯字词打分"
+                              % exc, RuntimeWarning, stacklevel=2)
+                sem = {}
         q = _bigrams(query_str)
         now = float(self._clock())
         scored = []
@@ -205,12 +245,21 @@ class MemoryService:
                     overlap += 2 * len(_bigrams(key))
                 elif key in query_str or (len(query_str) <= 2 and query_str in key):
                     overlap += 0.5
-            if overlap == 0:
+            s = sem.get(str(row.get("id") or ""), 0.0)
+            if overlap == 0 and s < self.semantic_min:
                 continue
+            relevance = overlap + (self.semantic_weight * s
+                                   if self._scorer is not None else 0.0)
             age = max(0.0, now - float(row.get("valid_from") or now)) / 86400.0
             decay = max(0.4, 1.0 - age / 60.0)
             conf = row.get("confidence")
-            scored.append((overlap * (0.6 if conf is None else float(conf)) * decay, row))
+            conf_f = 0.6 if conf is None else float(conf)
+            row2 = dict(row)
+            row2["recall_detail"] = {
+                "word": float(overlap), "semantic": s,
+                "confidence": conf_f, "decay": round(decay, 6),
+            }
+            scored.append((relevance * conf_f * decay, row2))
         scored.sort(key=lambda x: -x[0])
         return [row for _, row in scored[:int(limit)]]
 

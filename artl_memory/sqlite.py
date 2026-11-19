@@ -386,7 +386,7 @@ class SqliteMemoryStore:
             # 召回窗口截断不许把"这个槽现在的值"挤掉
             sql += " AND key<>''"
             sql = ("SELECT *, ROW_NUMBER() OVER (PARTITION BY key "
-                   "ORDER BY valid_from DESC, rowid DESC) AS rn FROM (" + sql + ")")
+                   "ORDER BY valid_from DESC) AS rn FROM (" + sql + ")")
             sql = "SELECT * FROM (" + sql + ") WHERE rn=1 ORDER BY valid_from DESC"
         else:
             sql += " ORDER BY valid_from DESC LIMIT ?"

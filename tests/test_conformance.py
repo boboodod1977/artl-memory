@@ -194,13 +194,27 @@ def test_sqlite_schema_version():
     assert v >= 1, "新库必须打上 schema 版本"
 
 
+def test_per_key_latest(make):
+    """槽位保底查询：每个非空 key 只回最新一条有效，无 key 流水不参与。"""
+    s = make()
+    mem = MemoryService(s, designer="d")
+    mem.remember("fact", "预算", "三十万", ts=1.0)
+    mem.remember("fact", "预算", "四十万", ts=2.0)   # 替代旧值
+    mem.remember("fact", "口味", "不吃香菜", ts=3.0)
+    mem.remember("fact", "", "无槽流水", ts=4.0)
+    rows = s.memory_items("d", "", per_key_latest=True)
+    got = {str(r.get("key")): r.get("value") for r in rows}
+    assert got == {"预算": "四十万", "口味": "不吃香菜"}, \
+        "每个槽只留最新有效、无 key 不进保底: %r" % got
+
+
 def main():
     n_pass = n_fail = 0
     backend_tests = (test_mem_isolation, test_op_chain, test_utterances_prune,
                      test_snapshot_ts_is_real, test_snapshot_cannot_pollute_store,
                      test_count_utterances_none_means_all, test_purge_designer,
                      test_service_evidence_chain, test_service_decay_prefers_fresh,
-                     test_recall_hits_single_char_key)
+                     test_recall_hits_single_char_key, test_per_key_latest)
     for name, make in _BACKENDS:
         for fn in backend_tests:
             try:

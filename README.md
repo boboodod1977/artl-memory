@@ -38,7 +38,7 @@ the right one, not for ranking them.
 | Multi-person isolation | **First-class** — per-person ledger, skills get scoped `MemView`s | Per-`user_id` scoping | Per-`user_id` scoping | No — one shared graph |
 | Deletion | **Hard delete** — `secure_delete` + `VACUUM` + WAL truncation, verified by byte-level scan | API delete; vector-store semantics | `forget` tooling | Delete tools on the JSONL file |
 | Works fully offline | Yes | No (LLM + vector store calls) | Yes | Yes |
-| Semantic (vector) search | **No** — explainable bigram scoring, on purpose | Yes | Optional embeddings | No — substring match |
+| Semantic (vector) search | **Optional hook** — explainable bigram by default; `[semantic]` extra plugs in embeddings | Yes | Optional embeddings | No — substring match |
 | Dependencies | **0** (stdlib `sqlite3`) | LLM client + vector DB + embedder | 0 required (v4) | Node.js runtime |
 
 Be fair to each of them:
@@ -119,6 +119,35 @@ python examples/two_people.py
 - Regression tests pin every bug ever found by external review:
   `python tests/test_regressions.py`
 
+## Optional semantic recall (0.3+)
+
+The core stays zero-dependency. "Understanding paraphrases" is an optional socket —
+the same philosophy as *the ledger, not the ears*: bring your own smarts, the books
+stay untouched.
+
+```python
+from artl_memory.contrib import EmbeddingScorer, fastembed_scorer
+
+mem = MemoryService(store, designer="王强",
+                    recall_scorer=fastembed_scorer())   # local bge-small-zh
+# or any embedding API:
+mem2 = MemoryService(store, designer="王强",
+                     recall_scorer=EmbeddingScorer(your_batch_embed_fn))
+```
+
+- **Red line: the scorer finds, it never writes.** It can only re-rank candidates
+  that already exist in the store — unknown ids are dropped. Utterances, evidence
+  chains and confidence stay in the core's custody
+- The merge is public: `relevance = word_score + semantic_weight × semantic_score`
+  (default 3.0); zero-overlap entries enter results only when their semantic score
+  ≥ `semantic_min` (default 0.5)
+- Every result carries `recall_detail` — `word / semantic / confidence / decay` as
+  separate factors, so *why this entry* stays answerable even with semantics on
+- Scorer down (API outage)? Warning + fall back to word-only scoring — recall
+  never dies with the plugin
+- `pip install artl-memory[semantic]`; without it the core is pure stdlib and
+  behavior is byte-identical
+
 ## Boundaries (stated plainly)
 
 - Values are stored JSON-serialized: `tuple` comes back as `list`; serialize custom
@@ -126,12 +155,16 @@ python examples/two_people.py
 - `recall` is O(n) full-scan scoring — deliberately index-free for explainability.
   The scan window is `MemoryService(recall_window=...)`, default 10000 entries; when
   the window fills up you get a loud `RuntimeWarning`, never silent truncation.
+  The window only truncates keyless chatter: the newest active entry of every
+  non-empty key always participates in scoring (0.3+) — "the current value of this
+  slot" can't be pushed out by noise.
   For bulk imports use `remember_many(...)` (one fsync per batch, ~100x faster than
   per-item commits) and make sure the window exceeds your total entry count.
-- **recall scores by literal token overlap; it does not paraphrase.** Rephrasing or
-  mixing languages will miss: `who pays thirty万 for the living room` does not
-  recall the Chinese entry「三十万」. If you need semantic search, layer embeddings
-  on top of `recall`.
+- **By default recall scores by literal token overlap; it does not paraphrase.**
+  Rephrasing or mixing languages will miss: `who pays thirty万 for the living room`
+  does not recall the Chinese entry「三十万」. Need semantics? Use the optional hook
+  (0.3+): `pip install artl-memory[semantic]`, or `EmbeddingScorer(your_embed_fn)`
+  for any embedding API — bring your own engine, the core stays clean.
 - Time decay floors at 0.4: very old high-confidence entries keep participating in
   ranking, just discounted. To retire an old memory from ranking entirely, `forget`
   it (expiry, not deletion).
@@ -147,8 +180,9 @@ python examples/two_people.py
 
 ## Explicitly not doing
 
-- **No vector retrieval.** bigram recall is deliberate: you can always see *why* it
-  remembered this entry. Need embeddings? Layer them on top of `recall`.
+- **No built-in vector retrieval in the core.** bigram recall is deliberate: you
+  can always see *why* it remembered this entry. Need semantics? There's an
+  optional hook (0.3+) — the engine is yours, the core stays untouched.
 - **No cloud sync, no multi-machine.** Your data is your file. Feature, not bug.
 - **No LLM calls.** The memory layer doesn't know LLMs exist — swap brains freely,
   the memory stays.

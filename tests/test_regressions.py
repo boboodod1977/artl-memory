@@ -13,6 +13,7 @@ P1-4  purge_designer 只 DELETE 不 VACUUM，库里明文残留（仅 SQLite）
 import sys
 import tempfile
 import time
+import warnings
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -485,6 +486,113 @@ def test_schema_v1_to_v2_migration():
     v = _sq.connect(str(tmp)).execute("PRAGMA user_version").fetchone()[0]
     assert v == 2
     s2.close()
+
+
+def test_recall_scorer_reranks(make):
+    """语义插口：scorer 的高分必须能改写排序（0.3 新特性）。"""
+    store = make()
+    base = MemoryService(store, designer="d")
+    base.remember("fact", "预算", "四十万", ts=100.0)
+    base.remember("fact", "周末", "去爬山", ts=200.0)
+    ids = {str(r["key"]): r["id"] for r in base._items()}
+    scorer = lambda q, rows: {ids["周末"]: 0.99}
+    mem = MemoryService(store, designer="d", recall_scorer=scorer,
+                        semantic_weight=10.0)
+    hits = mem.recall("预算")
+    assert hits and hits[0]["key"] == "周末", \
+        "scorer 高分必须能改排序: %r" % [r.get("key") for r in hits]
+    assert hits[0]["recall_detail"]["semantic"] == 0.99
+    assert hits[0]["recall_detail"]["word"] == 0.0
+    plain = [str(r.get("key")) for r in base.recall("预算")]
+    assert "周末" not in plain, "没装 scorer 时零重叠条目不该出现"
+
+
+def test_recall_scorer_cannot_inject(make):
+    """红线：scorer 只能重排，不许注入库外条目，陌生 id 直接丢弃。"""
+    store = make()
+    MemoryService(store, designer="d").remember("fact", "预算", "四十万",
+                                                ts=100.0)
+    scorer = lambda q, rows: {"mem_fake_1": 1.0, "": 0.9, "bogus": 0.8}
+    mem = MemoryService(store, designer="d", recall_scorer=scorer)
+    hits = mem.recall("预算")
+    real_ids = {r["id"] for r in mem._items()}
+    assert hits, "真实命中不该被假分数挤没"
+    assert all(r["id"] in real_ids for r in hits), "scorer 注入了库外条目"
+    assert all(r["recall_detail"]["semantic"] == 0.0 for r in hits), \
+        "陌生 id 的分数必须被丢弃"
+
+
+def test_recall_semantic_rescues_paraphrase(make):
+    """换说法召回：字词零重叠的条目靠语义分 ≥ semantic_min 捞回来。"""
+    store = make()
+    base = MemoryService(store, designer="d")
+    base.remember("fact", "预算", "客厅要花四十万", ts=100.0)
+    rid = base._items()[0]["id"]
+    q = "装修大概多少钱"  # 与"预算客厅要花四十万"零 bigram 重叠
+    assert base.recall(q) == [], "无 scorer 时换说法就该找不到（现状钉死）"
+    mem = MemoryService(store, designer="d",
+                        recall_scorer=lambda q_, rows: {rid: 0.8})
+    hits = mem.recall(q)
+    assert hits and hits[0]["id"] == rid, "语义分过门槛必须把换说法捞回来"
+    low = MemoryService(store, designer="d",
+                        recall_scorer=lambda q_, rows: {rid: 0.3})
+    assert low.recall(q) == [], "低于 semantic_min 不许滥捞"
+
+
+def test_recall_scorer_failure_falls_back(make):
+    """scorer 挂了（embedding API 宕）：警告 + 退化纯字词，召回不许跟着死。"""
+    store = make()
+    MemoryService(store, designer="d").remember("fact", "预算", "四十万",
+                                                ts=100.0)
+
+    def boom(q, rows):
+        raise RuntimeError("embed api down")
+
+    mem = MemoryService(store, designer="d", recall_scorer=boom)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        hits = mem.recall("预算")
+    assert hits and hits[0]["key"] == "预算", "scorer 挂了召回不许跟着死"
+    assert any("recall_scorer" in str(x.message) for x in w), \
+        "scorer 异常必须警告而不是静默"
+    assert hits[0]["recall_detail"]["semantic"] == 0.0
+
+
+def test_recall_floor_latest_per_key(make):
+    """槽位保底：带 key 的最新有效条目不许被 recall_window 挤掉。"""
+    store = make()
+    mem = MemoryService(store, designer="d", recall_window=5)
+    mem.remember("fact", "预算", "四十万", ts=1.0)
+    for i in range(10):
+        mem.remember("fact", "", "闲聊%d号" % i, ts=100.0 + i)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # 窗口警告此处不考
+        hits = mem.recall("预算")
+    assert hits and hits[0]["key"] == "预算", \
+        "带 key 的最新有效条目被窗口挤掉了"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        hits2 = mem.recall("闲聊0号")
+    assert all(r.get("value") != "闲聊0号" for r in hits2), \
+        "无 key 的老流水允许被窗口截断——这才是窗口的本职"
+
+
+def test_recall_detail_formula(make):
+    """recall_detail 四因子分列：word / semantic / confidence / decay 都对得上。"""
+    store = make()
+    m0 = MemoryService(store, designer="d")
+    it = m0.remember("fact", "预算", "四十万", ts=940.0, confidence=0.8)
+    rid = it["id"]
+    mem = MemoryService(store, designer="d", clock=lambda: 1000.0,
+                        recall_scorer=lambda q, rows: {rid: 0.5},
+                        semantic_weight=4.0)
+    hits = mem.recall("预算")
+    d = hits[0]["recall_detail"]
+    assert d["word"] == 4.0, "key 精确命中的字词分（1 基础重叠 + 3 key 加权）: %r" % d
+    assert d["semantic"] == 0.5
+    assert d["confidence"] == 0.8
+    expect_decay = 1.0 - ((1000.0 - 940.0) / 86400.0) / 60.0
+    assert abs(d["decay"] - expect_decay) < 1e-5, "decay 对不上: %r" % d
 
 
 def main():

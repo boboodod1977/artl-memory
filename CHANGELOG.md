@@ -2,6 +2,40 @@
 
 本项目遵循语义化版本。0.x 阶段： minor 可能含不兼容变更，patch 只修 bug。
 
+## [0.3.0] - 2026-11-19
+
+GROK 四步路线图的第二步：语义做成可选插口，核心继续零依赖。
+96 项测试（回归 62 + 一致性 24 + 对抗 10）双后端通过。
+
+### 新增
+
+- **可选语义召回插口**：`MemoryService(recall_scorer=...)`，协议为
+  `callable(query, rows) -> {id: 0..1}`。红线：scorer 只能给库内已有候选
+  改排序分，陌生 id 直接丢弃——重排可以，注入不行；scorer 异常时警告并
+  退化为纯字词打分，召回不跟着死。合并公式公开：
+  `相关度 = 字词分 + semantic_weight × 语义分`（`semantic_weight` 默认 3.0），
+  字词零重叠的条目需语义分 ≥ `semantic_min`（默认 0.5）才进结果。
+- **`artl_memory.contrib.EmbeddingScorer`**：把任何批量 embedding 函数
+  （本地小模型或任意 API）包装成 recall_scorer，按条目 id 缓存向量。
+  `fastembed_scorer()` 一键接本地 bge-small-zh（`pip install
+  artl-memory[semantic]`，不装就是纯零依赖）。
+- **`recall_detail`**：每条召回结果带 `word / semantic / confidence /
+  decay` 四个因子分列，"为什么想起这条"随时可查。
+- **召回槽位保底**：`recall_window` 截断只作用于无 key 的流水；每个非空
+  key 的最新有效条目永远参与打分（后端新增 `per_key_latest` 查询，
+  双后端一致性已测试）。
+
+### 修复
+
+- **多进程首启竞态**（CI 实测两种死法）：并发切换 WAL 把库切坏
+  （malformed）；后到的进程初始化撞异常就把先到的正在写的库误隔离，
+  两边各写各的丢记忆。现在初始化对锁竞争和结构错误都退避重试，
+  已是 WAL 不重复切换，重试耗尽才允许隔离；隔离文件名带进程号。
+
+### 修正
+
+- pyproject 的 Homepage 指向真实仓库地址。
+
 ## [0.2.0] - 2026-11-19
 
 两轮独立外部测评（5.5/10 → 65/100 → 75/100）+ 一轮自我苛刻测评驱动的修复与改进。

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "artl-memory"
-version = "0.2.0"
+version = "0.3.0"
 description = "The multi-person memory layer for agents: verbatim utterances, per-person isolation, evidence chain, confidence. It remembers everyone in the room — separately."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,8 +24,13 @@ classifiers = [
 # 零硬依赖：sqlite3 是标准库。这是刻意的——记忆层不该拖着一堆包进门。
 dependencies = []
 
+[project.optional-dependencies]
+# 可选语义召回：本地小模型（bge-small-zh）或任何 embedding API，
+# 接进 MemoryService(recall_scorer=...)。不装就是纯零依赖。
+semantic = ["fastembed>=0.4"]
+
 [project.urls]
-Homepage = "https://github.com/ARTL-family/artl-memory"
+Homepage = "https://github.com/boboodod1977/artl-memory"
 
 [tool.setuptools.packages.find]
 include = ["artl_memory*"]

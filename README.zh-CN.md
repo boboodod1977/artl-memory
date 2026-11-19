@@ -33,7 +33,7 @@ pip install artl-memory
 | 多人隔离 | **一等公民**：按人分账，技能拿受限 `MemView` | 按 `user_id` 分区 | 按 `user_id` 分区 | 没有，全库共享一张图 |
 | 删除 | **物理硬删**：secure_delete + VACUUM + WAL 截断，字节级扫描验证 | API 删除，向量库语义 | forget 工具 | JSONL 上的删除工具 |
 | 完全离线可用 | 是 | 否（LLM + 向量库调用） | 是 | 是 |
-| 语义（向量）检索 | **没有**，bigram 可解释打分，刻意的 | 有 | 可选嵌入 | 没有，子串匹配 |
+| 语义（向量）检索 | **可选插口**：默认 bigram（可解释），`[semantic]` 额外包接嵌入 | 有 | 可选嵌入 | 没有，子串匹配 |
 | 依赖 | **0**（标准库 `sqlite3`） | LLM 客户端 + 向量库 + embedding | 0 必需（v4） | Node.js 运行时 |
 
 公道话：
@@ -100,17 +100,44 @@ python examples/two_people.py
 - 同一套一致性测试跑两个后端：`python tests/test_conformance.py`（也兼容 pytest）
 - 对抗性测试管"没说也不许炸"：`python tests/test_adversarial.py`
 
+## 可选语义召回（0.3+）
+
+核心继续零依赖；"懂不懂换说法"做成可选插口，和"耳朵自带"是同一个哲学——
+聪明自带，账本不动：
+
+```python
+from artl_memory.contrib import EmbeddingScorer, fastembed_scorer
+
+mem = MemoryService(store, designer="王强",
+                    recall_scorer=fastembed_scorer())   # 本地 bge-small-zh
+# 或者接任何 embedding API：
+mem2 = MemoryService(store, designer="王强",
+                     recall_scorer=EmbeddingScorer(你的批量embed函数))
+```
+
+- **红线：scorer 只负责找，不负责写**。它只能给库内已有候选改排序分，
+  注入不了新记忆；原话、证据链、把握度始终由核心保管
+- 合并公开：`相关度 = 字词分 + semantic_weight × 语义分`（默认 3.0）；
+  字词零重叠的条目需语义分 ≥ `semantic_min`（默认 0.5）才进结果
+- 每条结果带 `recall_detail`：`word / semantic / confidence / decay`
+  四因子分列——"为什么想起这条"装了语义也照样可查
+- scorer 挂了（API 宕了）：警告 + 退化纯字词打分，召回不跟着死
+- `pip install artl-memory[semantic]`；不装就是纯零依赖，行为一字不变
+
 ## 边界（写在明处）
 
 - 值经 JSON 序列化存储：`tuple` 读出会变 `list`，自定义对象请自己序列化。
 - `recall` 是 O(n) 全量打分——为可解释性刻意不做索引。扫描上限由
   `MemoryService(recall_window=...)` 控制，默认 10000 条；窗口打满时
   发 `RuntimeWarning`，最老的条目可能没参与打分，不会静默截断。
+  窗口只截无 key 的流水：每个非空 key 的最新有效条目保底参与打分，
+  "这个槽现在的值"不会被流水挤掉（0.3+）。
   批量导入请用 `remember_many(...)`（整批一次落盘，比逐条快约两个数量级），
   并确认窗口大于你的条目总量。
-- **recall 只按字词重叠打分，不懂释义**。换说法、中英混写会找不到：
+- **recall 默认只按字词重叠打分，不懂释义**。换说法、中英混写会找不到：
   查询 `who pays thirty万 for the living room` 召不回中文条目「三十万」。
-  需要语义检索，在 recall 之上自己接向量层。
+  需要语义，用可选插口（0.3+）：`pip install artl-memory[semantic]` 或
+  `EmbeddingScorer(你的 embedding 函数)`——引擎自带，核心不内置。
 - 时间衰减有 0.4 的下限：很旧的高把握度条目会一直参与排序，只是权重打折。
   想让旧记忆彻底退出排序，请 `forget` 它（失效，不删除）。
 - 空查询返回空列表——"你想找什么"没有答案时，不假装理解。
@@ -121,8 +148,8 @@ python examples/two_people.py
 
 ## 明确不做
 
-- **不做向量检索**。bigram 召回是刻意的：你随时能看清"它为什么想起这条"。
-  需要向量，自己在 recall 之上接。
+- **核心不内置向量检索**。默认 bigram 召回是刻意的：你随时能看清
+  "它为什么想起这条"。需要语义走可选插口（0.3+），引擎自带、核心不沾。
 - **不做云端同步、不做多机**。数据在你的文件里，这是特性不是缺陷。
 - **不调用任何大模型**。记忆层不知道 LLM 存在——脑子随便换，记忆不动。
 
