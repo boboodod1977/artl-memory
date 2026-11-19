@@ -205,16 +205,18 @@ class InMemoryStore:
         # 调用方给多少就是多少，不在这里偷偷设天花板
         return out[:max(1, int(limit))]
 
-    def expire_memory_item(self, item_id: str, ts: float, designer: str | None = None) -> None:
+    def expire_memory_item(self, item_id: str, ts: float, designer: str) -> None:
         ts = float(ts)
         if ts <= 0:
             # truthy 判断下 valid_to=0 等于"恢复有效"，这是撤销失效的后门
             raise ValueError("expire 的时间戳必须 > 0")
+        if not designer:
+            raise ValueError("expire 必须指明 designer（属主校验）")
         row = self._items.get(item_id)
         if row is None:
             return
         # 属主校验：拿到 id 不许作废别人的条目
-        if designer is not None and row.get("designer") != designer:
+        if row.get("designer") != designer:
             return
         row["valid_to"] = ts
 

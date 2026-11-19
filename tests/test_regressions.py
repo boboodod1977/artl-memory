@@ -236,8 +236,13 @@ def test_expire_rejects_zero_ts(make):
     mem = MemoryService(make(), designer="d")
     item = mem.remember("fact", "k", "v", ts=time.time())
     try:
-        mem._store.expire_memory_item(item["id"], 0)
+        mem._store.expire_memory_item(item["id"], 0, designer="d")
         raise SystemExit("expire(ts=0) 没拒收 = 失效可撤销")
+    except ValueError:
+        pass
+    try:
+        mem._store.expire_memory_item(item["id"], time.time(), designer="")
+        raise SystemExit("expire 不带 designer = 属主校验形同虚设")
     except ValueError:
         pass
     assert mem._items(key="k"), "条目必须仍然有效"

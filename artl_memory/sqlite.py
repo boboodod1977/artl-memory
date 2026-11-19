@@ -360,21 +360,20 @@ class SqliteMemoryStore:
             out.append(d)
         return out
 
-    def expire_memory_item(self, item_id: str, ts: float, designer: str | None = None) -> None:
+    def expire_memory_item(self, item_id: str, ts: float, designer: str) -> None:
         ts = float(ts)
         if ts <= 0:
             # valid_to=0 在读取侧被当作"有效"（历史兼容），放任 ts<=0 写进去
             # 等于给"撤销失效"留后门。失效是证据链事件，必须带真实时间。
             raise ValueError("expire 的时间戳必须 > 0")
+        if not designer:
+            # 属主必填：拿到 id 不许作废别人的条目（评审实测：可选参数
+            # 等于没有校验，alice 的条目能被 bob 作废）
+            raise ValueError("expire 必须指明 designer（属主校验）")
         with self._lock:
-            if designer is not None:
-                # 属主校验：拿到 id 不许作废别人的条目
-                self._db.execute(
-                    "UPDATE memory_items SET valid_to=? WHERE id=? AND designer=?",
-                    (ts, item_id, designer))
-            else:
-                self._db.execute("UPDATE memory_items SET valid_to=? WHERE id=?",
-                                 (ts, item_id))
+            self._db.execute(
+                "UPDATE memory_items SET valid_to=? WHERE id=? AND designer=?",
+                (ts, item_id, designer))
             self._commit()
 
     # ---------------- op 链 ----------------

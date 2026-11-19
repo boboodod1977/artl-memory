@@ -12,7 +12,8 @@
 - `recall("")` 空查询改为返回空列表（原行为：返回按把握度排序的全量）。
 - `remember` / `import_*` 返回的条目新增 `created` 标记（True=新写入，False=去重命中）；
   `import_*` 返回值语义从"处理数"改为"新增条数"。
-- `expire_memory_item` 拒收 `ts <= 0`（ValueError），并新增可选 `designer` 属主校验。
+- `expire_memory_item` 拒收 `ts <= 0`（ValueError），且 `designer` 改为必填
+  做属主校验——拿到 id 作废不了别人的条目。
 - `import_profile` 的 key 从列表序号改为内容哈希——重复导入同一份画像（即使顺序
   变化）不再产生重复条目；旧数据如需去重请 purge 后重新导入。
 - SQLite schema 升至 v2（`user_version=2`），老库打开时自动迁移
