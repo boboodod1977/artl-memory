@@ -68,7 +68,11 @@ class MemoryStore(Protocol):
 
     def memory_items(self, designer: str, project: str = "", scope: str = "",
                      kind: str = "", key: str = "", active_only: bool = True,
-                     limit: int = 1000) -> list: ...
+                     limit: int = 1000, per_key_latest: bool = False) -> list:
+        """per_key_latest=True 时语义特殊：返回每个非空 key 的最新一条
+        **有效**条目（忽略 limit 和 active_only）——召回的槽位保底用它，
+        窗口截断不许把"这个槽现在的值"挤掉。"""
+        ...
 
     def expire_memory_item(self, item_id: str, ts: float, designer: str) -> None: ...
 

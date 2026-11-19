@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import random
 import sqlite3
 import threading
 import time
@@ -177,35 +178,63 @@ class SqliteMemoryStore:
         return bool(self._closed) or self._raw is None
 
     def _open(self):
-        db = sqlite3.connect(self.path, check_same_thread=False, timeout=5.0)
-        try:
-            db.row_factory = sqlite3.Row
-            db.execute("PRAGMA journal_mode=WAL")
-            db.executescript(SCHEMA)
-            # schema 版本号：以后加表/改结构靠它做迁移判断，不靠猜
-            v = db.execute("PRAGMA user_version").fetchone()[0]
-            if v == 0:
-                db.executescript(SCHEMA_V2)
-                db.execute("PRAGMA user_version=2")
-            elif v == 1:
-                # v1 → v2：唯一索引上线前，先把历史遗留的同槽多条有效
-                # 收敛成每组只留最新的一条，其余标记失效
-                _dedupe_active(db)
-                db.executescript(SCHEMA_V2)
-                db.execute("PRAGMA user_version=2")
-            db.commit()
-        except Exception:
-            # 必须先关掉：Windows 下被占用的文件重命名会失败，
-            # 那样隔离就成了一句空话，下一次 open 还是读到同一个坏文件。
+        # 多进程首启竞态（CI 实测两种死法）：
+        #   1. 两进程同时切 WAL 模式，文件被切坏，后到的读到 malformed
+        #   2. 后到的初始化撞异常就走隔离，把先到的正在写的库改名挪走，
+        #      两边各写各的，记忆凭空消失
+        # 对策：锁竞争和"坏文件"都先退避重试——等先到的初始化完，后来的
+        # 就能干净打开；重试耗尽还坏，才交给调用方隔离重建。
+        last_exc: Exception | None = None
+        for attempt in range(8):
+            db = None
             try:
-                db.close()
-            except Exception:
-                pass
-            raise
-        return db
+                db = sqlite3.connect(self.path, check_same_thread=False,
+                                     timeout=5.0)
+                db.row_factory = sqlite3.Row
+                mode = str(db.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+                if mode != "wal":
+                    # 已是 WAL 就不动——重复切换是多进程首启的坏库根源之一
+                    db.execute("PRAGMA journal_mode=WAL")
+                db.executescript(SCHEMA)
+                # schema 版本号：以后加表/改结构靠它做迁移判断，不靠猜
+                v = db.execute("PRAGMA user_version").fetchone()[0]
+                if v == 0:
+                    db.executescript(SCHEMA_V2)
+                    db.execute("PRAGMA user_version=2")
+                elif v == 1:
+                    # v1 → v2：唯一索引上线前，先把历史遗留的同槽多条有效
+                    # 收敛成每组只留最新的一条，其余标记失效
+                    _dedupe_active(db)
+                    db.executescript(SCHEMA_V2)
+                    db.execute("PRAGMA user_version=2")
+                db.commit()
+                return db
+            except sqlite3.OperationalError as exc:
+                # 锁竞争：另一个进程正在初始化/切换 WAL，退避等它完成
+                last_exc = exc
+            except sqlite3.DatabaseError:
+                # 结构错误：可能真坏，也可能撞见别人初始化到一半——
+                # 先退避重试，耗尽后抛给调用方走隔离
+                if db is not None:
+                    try:
+                        db.close()
+                    except Exception:
+                        pass
+                if attempt < 7:
+                    time.sleep(0.05 * (attempt + 1) + random.random() * 0.05)
+                    continue
+                raise
+            if db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    pass
+            time.sleep(0.05 * (attempt + 1) + random.random() * 0.05)
+        raise last_exc  # type: ignore[misc]
 
     def _quarantine(self) -> None:
-        stamp = time.strftime("%Y%m%d-%H%M%S")
+        import os
+        stamp = time.strftime("%Y%m%d-%H%M%S") + "-p%d" % os.getpid()
         for suffix in ("", "-wal", "-shm"):
             src = Path(self.path + suffix)
             if not src.exists():
@@ -326,9 +355,19 @@ class SqliteMemoryStore:
                 raise ConflictError(str(exc)) from exc
             self._commit()
 
+    def _row_to_item(self, r) -> dict:
+        d = {k: r[k] for k in r.keys() if k != "rn"}  # rn 是窗口函数的内部列
+        try:
+            d["value"] = json.loads(d.pop("value_json") or "{}")
+        except Exception:
+            warnings.warn("memory_items.value_json 解析失败，按空值返回: %r"
+                          % (d.get("id"),), RuntimeWarning, stacklevel=2)
+            d["value"] = {}
+        return d
+
     def memory_items(self, designer: str, project: str = "", scope: str = "",
                      kind: str = "", key: str = "", active_only: bool = True,
-                     limit: int = 1000) -> list:
+                     limit: int = 1000, per_key_latest: bool = False) -> list:
         sql = "SELECT * FROM memory_items WHERE designer=? AND project=?"
         args: list[Any] = [designer, project]
         if scope:
@@ -340,25 +379,23 @@ class SqliteMemoryStore:
         if key:
             sql += " AND key=?"
             args.append(key)
-        if active_only:
+        if active_only or per_key_latest:
             sql += " AND (valid_to IS NULL OR valid_to=0)"
-        sql += " ORDER BY valid_from DESC LIMIT ?"
-        # 调用方给多少就是多少，不在这里偷偷设天花板——静默截断
-        # 意味着"最老的那条永远想不起来"，比慢更可怕。
-        args.append(max(1, int(limit)))
+        if per_key_latest:
+            # 槽位保底：每个非空 key 的最新一条有效行，忽略 limit——
+            # 召回窗口截断不许把"这个槽现在的值"挤掉
+            sql += " AND key<>''"
+            sql = ("SELECT *, ROW_NUMBER() OVER (PARTITION BY key "
+                   "ORDER BY valid_from DESC, rowid DESC) AS rn FROM (" + sql + ")")
+            sql = "SELECT * FROM (" + sql + ") WHERE rn=1 ORDER BY valid_from DESC"
+        else:
+            sql += " ORDER BY valid_from DESC LIMIT ?"
+            # 调用方给多少就是多少，不在这里偷偷设天花板——静默截断
+            # 意味着"最老的那条永远想不起来"，比慢更可怕。
+            args.append(max(1, int(limit)))
         with self._lock:
             rows = self._db.execute(sql, tuple(args)).fetchall()
-        out = []
-        for r in rows:
-            d = {k: r[k] for k in r.keys()}
-            try:
-                d["value"] = json.loads(d.pop("value_json") or "{}")
-            except Exception:
-                warnings.warn("memory_items.value_json 解析失败，按空值返回: %r"
-                              % (d.get("id"),), RuntimeWarning, stacklevel=2)
-                d["value"] = {}
-            out.append(d)
-        return out
+        return [self._row_to_item(r) for r in rows]
 
     def expire_memory_item(self, item_id: str, ts: float, designer: str) -> None:
         ts = float(ts)

@@ -187,8 +187,9 @@ class InMemoryStore:
 
     def memory_items(self, designer: str, project: str = "", scope: str = "",
                      kind: str = "", key: str = "", active_only: bool = True,
-                     limit: int = 1000) -> list:
+                     limit: int = 1000, per_key_latest: bool = False) -> list:
         out = []
+        best = {}  # per_key_latest 模式：key -> 最新有效行
         for row in self._items.values():
             if row.get("designer") != designer or str(row.get("project") or "") != project:
                 continue
@@ -200,7 +201,19 @@ class InMemoryStore:
                 continue
             if active_only and row.get("valid_to"):
                 continue
+            if per_key_latest:
+                k = str(row.get("key") or "")
+                if not k or row.get("valid_to"):
+                    continue  # 无 key 的是流水不是槽位；保底只保有效行
+                if k not in best or float(row.get("valid_from") or 0) > float(
+                        best[k].get("valid_from") or 0):
+                    best[k] = row
+                continue
             out.append(copy.deepcopy(row))  # 深拷贝：外部改嵌套值不许污染库
+        if per_key_latest:
+            out = [copy.deepcopy(r) for r in best.values()]
+            out.sort(key=lambda r: -float(r.get("valid_from") or 0))
+            return out  # 保底不看 limit
         out.sort(key=lambda r: -float(r.get("valid_from") or 0))
         # 调用方给多少就是多少，不在这里偷偷设天花板
         return out[:max(1, int(limit))]

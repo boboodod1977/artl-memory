@@ -422,6 +422,39 @@ def test_multiprocess_same_key_single_active():
     assert len(total) >= 2, "败者必须留在证据链里，不是被吞掉: " + diag
 
 
+def test_multiprocess_first_open_race():
+    """多进程同时首启建库：不许坏库、不许误隔离、不许丢行（CI 实测打穿过）。
+
+    两个历史症状：并发切 WAL 把文件切坏（malformed）；后到的进程把
+    先到的正在写的库改名隔离，两边各写各的（total 只剩一边的）。
+    """
+    import subprocess
+    tmp = Path(tempfile.mkdtemp())
+    db = tmp / "race.db"
+    worker = (
+        "import sys, time; sys.path.insert(0, %r);"
+        "from artl_memory import SqliteMemoryStore, MemoryService;"
+        "m = MemoryService(SqliteMemoryStore(%r), designer='d');"
+        "[m.remember('fact', '槽', sys.argv[1] + str(i), ts=time.time())"
+        " for i in range(5)]"
+    ) % (str(Path(__file__).resolve().parents[1]), str(db))
+    ps = [subprocess.Popen([sys.executable, "-c", worker, name],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+          for name in ("甲", "乙", "丙", "丁")]
+    codes = [p.wait() for p in ps]
+    err = "\n".join(p.stderr.read().decode("utf-8", "replace") for p in ps)
+    leftovers = [p.name for p in tmp.iterdir() if ".corrupt-" in p.name]
+    mem = MemoryService(SqliteMemoryStore(db), designer="d")
+    alive = mem._items(key="槽")
+    total = mem._items(key="槽", active_only=False)
+    diag = "codes=%s alive=%d total=%d corrupt=%s stderr=%s" % (
+        codes, len(alive), len(total), leftovers, err[-500:])
+    assert codes == [0] * 4, "首启竞态下有进程异常退出: " + diag
+    assert not leftovers, "竞态不该触发误隔离: " + diag
+    assert len(alive) == 1, "同槽只能活一条: " + diag
+    assert len(total) >= 4, "四个进程的写入都得留在证据链里: " + diag
+
+
 def test_schema_v1_to_v2_migration():
     """老库升级：带着同槽重复有效行的 v1 库，重开后收敛到一条并建好索引。"""
     import sqlite3 as _sq
