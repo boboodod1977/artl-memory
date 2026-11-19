@@ -15,6 +15,13 @@ import tempfile
 import time
 from pathlib import Path
 
+# Windows 老控制台（GBK / cp1252）打印中文会炸，把 stdout 切到 UTF-8
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, OSError):
+    pass
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from artl_memory import MemoryService, SqliteMemoryStore
