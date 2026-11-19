@@ -14,6 +14,12 @@ each memory carrying its source utterance and a confidence score. When a fact is
 corrected, the old entry is marked expired — never silently overwritten — and the
 evidence chain stays in place.
 
+> **Scope: the ledger, not the ears.** artl-memory contains no audio, no ASR, no
+> voiceprint. Your upstream pipeline (diarization, voiceprint, manual labels)
+> decides *who* said what and hands this library the name — it keeps the books.
+> That is what makes it dependency-free: usable without ears, plug-and-play with
+> them.
+
 ```bash
 pip install .        # from source (PyPI package not yet published)
 ```
