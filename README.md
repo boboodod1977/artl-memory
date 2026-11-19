@@ -1,35 +1,83 @@
 # artl-memory
 
 **The multi-person memory layer for agents.**
-逐句原话 · 按人隔离 · 证据链 · 把握度。
+Verbatim utterances · per-person isolation · evidence chains · confidence scores.
 
 > It remembers everyone in the room — separately.
-> 我们不承诺理解，我们承诺不忘。
+> We don't promise understanding. We promise not to forget.
 
-artl-memory 是 ARTL 家族（ARTLESS 助理、ARTLE 系列）的记忆层，从生产环境
-的自研助理中抽出。它不做"总结你的画像然后假装懂你"——它保存**谁、在什么时间、
-说了什么原话**，每条记忆带着来源和把握度；记错了就标记失效，证据链留在原地。
+[中文文档](README.zh-CN.md)
+
+artl-memory is extracted from a production assistant. It does **not** "summarize a
+profile of you and pretend to know you" — it stores **who said exactly what, and when**,
+each memory carrying its source utterance and a confidence score. When a fact is
+corrected, the old entry is marked expired — never silently overwritten — and the
+evidence chain stays in place.
 
 ```bash
-pip install .        # 本地源码安装（PyPI 包尚未发布）
+pip install .        # from source (PyPI package not yet published)
 ```
 
-## 为什么是 multi-person
+## Which memory layer should you pick?
 
-市面上的 agent 记忆方案（Mem0、Letta、Zep……）都是**单用户**模型：一个用户，
-一份画像。artl-memory 从第一天就是多人模型：
+Everyone arriving here has Mem0 (~60k★) as their reference point, so let's be direct
+about it. These four tools answer **different questions** — this table is for picking
+the right one, not for ranking them.
 
-- **按人隔离**：王强的旧话不会进李四的口；技能/插件只见自己的记忆——
-  `MemView` 上不挂 store 本体，正常 API 面没有别人的入口
-  （同进程 introspection 挖得回去，要防恶意代码请上进程边界）
-- **逐句原话**：先存原文，判断当场重算；改写原文在这条链路里不存在
-- **证据链**：每条记忆带 `source_event`（它是从哪句话来的）和 `confidence`；
-  改口了，旧值标记失效并挂在 `supersedes` 上——**失效不是删除**
-- **到期降级**：原话留 N 天，没被引用的整行清，被引用的清正文留摘要
-- **被遗忘权**：`store.purge_designer("王强")` 把这个人的五类数据真删干净，
-  返回各类删了多少条——是硬删除，不是标记
+| | **artl-memory** | **Mem0** | **memoripy v4** | **MCP memory (official)** |
+|---|---|---|---|---|
+| Needs an LLM to write memory | **No** — zero model calls | Yes — extraction LLM on every `add()` | No required — deterministic extractor, bring-your-own optional | No — the agent itself decides what to store |
+| What gets stored | **Verbatim utterances** + derived facts | LLM-extracted summaries | Evidence + derived memory, versioned | Entities / relations / observations |
+| Can you trace a memory to its source? | Yes — `source_event` + confidence on every entry | Partial — extraction rewrites wording | Yes — citations and receipts | No |
+| Multi-person isolation | **First-class** — per-person ledger, skills get scoped `MemView`s | Per-`user_id` scoping | Per-`user_id` scoping | No — one shared graph |
+| Deletion | **Hard delete** — `secure_delete` + `VACUUM` + WAL truncation, verified by byte-level scan | API delete; vector-store semantics | `forget` tooling | Delete tools on the JSONL file |
+| Works fully offline | Yes | No (LLM + vector store calls) | Yes | Yes |
+| Semantic (vector) search | **No** — explainable bigram scoring, on purpose | Yes | Optional embeddings | No — substring match |
+| Dependencies | **0** (stdlib `sqlite3`) | LLM client + vector DB + embedder | 0 required (v4) | Node.js runtime |
 
-## 上手（30 秒）
+Be fair to each of them:
+
+- **Pick Mem0** if you want automatic "talk → extracted profile" with semantic search,
+  mature framework integrations (LangChain, CrewAI, AutoGen) and published benchmark
+  numbers. That's a lot of real value. The trade-offs are documented by its own
+  community: an audit of 10,134 Mem0 entries found 97.8% junk, including hallucinated
+  user profiles that get re-extracted and amplified across sessions
+  ([mem0#4573](https://github.com/mem0ai/mem0/issues/4573)); the HaluMem benchmark
+  found extraction-stage hallucination is systemic across LLM-based memory systems
+  ([arXiv:2511.03506](https://arxiv.org/abs/2511.03506)). If the wording of a memory
+  doesn't have to be provably what a human said, that trade may be fine for you.
+- **Pick memoripy** if you like the evidence-first philosophy on a **single-user**
+  workload and want an official MCP server out of the box.
+- **Pick the official MCP memory server** if you need a minimal scratchpad for one
+  agent on one machine. It calls itself a reference implementation, and it is honest
+  about being one.
+- **Pick artl-memory** if the question is *"several people talk to one agent — in a
+  meeting room, a family, a mediation session — and the record has to hold up later"*:
+  who said which exact sentence, how confident was the transcription, what did the
+  agent believe before the correction, and can 王强's utterances really be erased
+  byte-for-byte when he asks. If a smart profile matters more than a trustworthy
+  ledger, we are the wrong tool — and this README will tell you so again below.
+
+## Why multi-person
+
+Most agent memory systems are **single-user** models: one user, one profile.
+artl-memory was a multi-person model from day one:
+
+- **Per-person isolation**: 王强's utterances never leak into 李四's recall; skills and
+  plugins only see their own slot through `MemView`, which holds no store handle
+  (same-process introspection can still dig — for hostile code, use process isolation)
+- **Verbatim first**: the original sentence is stored before any judgement; rewriting
+  history does not exist on this path
+- **Evidence chains**: every memory carries `source_event` (which utterance it came
+  from) and `confidence`; corrections expire the old entry and link it via
+  `supersedes` — **expiry is not deletion**
+- **Time-based downgrade**: utterances older than N days are pruned — unreferenced
+  rows are deleted, referenced rows keep their snippet so the chain never dangles
+- **Right to be forgotten**: `store.purge_designer("王强")` physically erases all five
+  tables' worth of his data (`PRAGMA secure_delete` + `VACUUM` + WAL truncation),
+  and returns per-table deletion counts
+
+## Quickstart (30 seconds)
 
 ```python
 from artl_memory import SqliteMemoryStore, MemoryService, MemView
@@ -39,46 +87,49 @@ mem = MemoryService(store, designer="heima")
 
 mem.remember("preference", "王强:预算", "三十万",
              source="utterance:wq-001", confidence=0.9)
-mem.recall("王强的预算")        # 相关度 × 把握度 × 时间衰减，每个因子可解释
+mem.recall("王强的预算")        # relevance × confidence × time decay — every factor explainable
 
 view = MemView(store, owner="skill:render", designer="heima")
-view.put("风格", "奶油风")       # 技能的记忆，别人的进不来
+view.put("风格", "奶油风")       # this skill's memory; nobody else's gets in
 ```
 
-跑通多人示例：
+Run the multi-person example:
 
 ```bash
 python examples/two_people.py
 ```
 
-## 零依赖，两个后端
+## Zero dependencies, two backends
 
-- **零硬依赖**：只用标准库（`sqlite3` 内置）。记忆层不该拖着一堆包进门。
-- `InMemoryStore`：测试与试用（非线程安全）；`SqliteMemoryStore`：WAL、
-  单连接、连接被关自动重开、坏文件自动隔离、schema 带版本号。
-- 同一套一致性测试跑两个后端：`python tests/test_conformance.py`（也兼容 pytest）
-- 对抗性测试管"没说也不许炸"：`python tests/test_adversarial.py`
+- **Zero hard dependencies**: standard library only (`sqlite3` is built in). A memory
+  layer should not drag a dependency tree through your door.
+- `InMemoryStore` for tests and trials (not thread-safe); `SqliteMemoryStore` with
+  WAL, single connection, auto-reopen after close, corrupt-file quarantine, and a
+  versioned schema.
+- The same conformance suite runs against both backends:
+  `python tests/test_conformance.py` (pytest-compatible)
+- Adversarial tests cover "undocumented but must not explode":
+  `python tests/test_adversarial.py`
+- Regression tests pin every bug ever found by external review:
+  `python tests/test_regressions.py`
 
-## 边界（写在明处）
+## Boundaries (stated plainly)
 
-- 值经 JSON 序列化存储：`tuple` 读出会变 `list`，自定义对象请自己序列化。
-- `recall` 是 O(n) 全量打分——为可解释性刻意不做索引。扫描上限由
-  `MemoryService(recall_window=...)` 控制，默认 10000 条（对齐"万级以下"
-  的承诺）；超过这个规模请显式调大，或在自己的后端里建索引。
+- Values are stored JSON-serialized: `tuple` comes back as `list`; serialize custom
+  objects yourself.
+- `recall` is O(n) full-scan scoring — deliberately index-free for explainability.
+  The scan window is `MemoryService(recall_window=...)`, default 10000 entries; when
+  the window fills up you get a loud `RuntimeWarning`, never silent truncation.
+- Isolation is at the API surface. Nothing in-process is cryptographically hidden —
+  if plugins are adversarial, put them behind a process boundary.
 
-## 明确不做
+## Explicitly not doing
 
-- **不做向量检索**。bigram 召回是刻意的：你随时能看清"它为什么想起这条"。
-  需要向量，自己在 recall 之上接。
-- **不做云端同步、不做多机**。数据在你的文件里，这是特性不是缺陷。
-- **不调用任何大模型**。记忆层不知道 LLM 存在——脑子随便换，记忆不动。
-
-## English
-
-artl-memory is a local-first memory layer for agents that need to remember
-**multiple people, separately**. Verbatim utterances, per-person isolation,
-evidence chains with provenance and confidence, and expiry-instead-of-delete.
-Zero dependencies, SQLite or in-memory backends, no LLM calls — bring any brain.
+- **No vector retrieval.** bigram recall is deliberate: you can always see *why* it
+  remembered this entry. Need embeddings? Layer them on top of `recall`.
+- **No cloud sync, no multi-machine.** Your data is your file. Feature, not bug.
+- **No LLM calls.** The memory layer doesn't know LLMs exist — swap brains freely,
+  the memory stays.
 
 ## License
 
