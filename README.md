@@ -21,7 +21,7 @@ evidence chain stays in place.
 > them.
 
 ```bash
-pip install .        # from source (PyPI package not yet published)
+pip install artl-memory
 ```
 
 ## Which memory layer should you pick?

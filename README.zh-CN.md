@@ -17,7 +17,7 @@ artl-memory 是 ARTL 家族（ARTLESS 助理、ARTLE 系列）的记忆层，从
 > 把人名交给它记账。零依赖就是这么来的：不接声纹也能用，接了即插即用。
 
 ```bash
-pip install .        # 本地源码安装（PyPI 包尚未发布）
+pip install artl-memory
 ```
 
 ## 该选哪个记忆层？
