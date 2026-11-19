@@ -11,9 +11,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
+import threading
 import time
 import uuid
+import warnings
 from dataclasses import dataclass
 
 
@@ -39,56 +42,77 @@ def _bigrams(s: str) -> set:
 
 
 class MemoryService:
-    def __init__(self, store, designer: str, project: str = "", clock=time.time):
+    def __init__(self, store, designer: str, project: str = "", clock=time.time,
+                 recall_window: int = 10000):
         self._store = store
         self.designer = str(designer or "")
         self.project = str(project or "")
         self._clock = clock
+        # 召回时的最大扫描条数。README 承诺"适用万级以下"，默认值对齐这个
+        # 承诺；超过这个规模请显式调大，而不是被静默截断。
+        self.recall_window = int(recall_window) if recall_window else 10000
+        # remember 的 查重-失效-写入 是一整条 check-then-act：不加锁，
+        # 两个线程同 key 并发会各写一条、supersedes 全断。
+        self._lock = threading.RLock()
 
     @property
     def enabled(self) -> bool:
         return hasattr(self._store, "add_memory_item") and hasattr(self._store, "memory_items")
 
     def _items(self, scope: str = "", kind: str = "", key: str = "",
-               active_only: bool = True, limit: int = 1000) -> list:
+               active_only: bool = True, limit: int = 0) -> list:
         if not self.enabled:
             return []
         return self._store.memory_items(self.designer, self.project, scope=scope,
                                         kind=kind, key=key,
-                                        active_only=active_only, limit=limit)
+                                        active_only=active_only,
+                                        limit=limit or self.recall_window)
 
     def remember(self, kind: str, key: str, value, scope: str = "facts",
                  source: str = "", confidence: float = 0.6,
                  ts: float | None = None) -> dict | None:
-        """同值去重；值变了就让旧条目失效并记为被新条目替代。"""
+        """同值去重；值变了就让旧条目失效并记为被新条目替代。
+
+        返回的条目带一个 "created" 标记：True=本次新写入，
+        False=命中去重返回的是旧条目（import_* 靠它数"新增"）。
+        """
         if not self.enabled:
             return None
-        now = float(ts if ts is not None else self._clock())
-        for row in self._items(scope=scope, kind=kind):
-            if row.get("value") == value:
-                return row
-        rows = self._items(scope=scope, kind=kind, key=key)
-        for row in rows:
-            if row.get("value") == value:
-                return row
-        # 同 key 的旧条目可能不止一条（比如从旧系统导入的）：全部失效，
-        # supersedes 指向最近的一条（rows 按 valid_from 倒序，第一条最新）。
-        supersedes = ""
-        if rows:
-            supersedes = str(rows[0].get("id") or "")
+        with self._lock:  # check-then-act 全程原子，并发下同 key 不双写
+            now = float(ts if ts is not None else self._clock())
+            # 去重必须限定同 key：只按 scope+kind 查会把"别人记过同样的值"
+            # 也命中，导致第二个人的记忆被吞掉并返回第一个人的条目。
+            rows = self._items(scope=scope, kind=kind, key=key)
+            # 空 key 在后端等于"不过滤"，这里按精确 key 再筛一遍，
+            # 否则无 key 事实会去重到别人带 key 的条目上（P0-1 的变种）
+            rows = [r for r in rows if str(r.get("key") or "") == str(key or "")]
             for row in rows:
-                self._store.expire_memory_item(row["id"], now)
-        item = {
-            "id": "mem_" + uuid.uuid4().hex[:12],
-            "designer": self.designer, "project": self.project,
-            "scope": str(scope or "facts"), "kind": str(kind or "fact"),
-            "key": str(key or ""), "value": value,
-            "confidence": round(float(confidence or 0.6), 2),
-            "source_event": str(source or "")[:200],
-            "valid_from": now, "valid_to": None, "supersedes": supersedes,
-        }
-        self._store.add_memory_item(item)
-        return item
+                if row.get("value") == value:
+                    row = dict(row)
+                    row["created"] = False
+                    return row
+            # 同 key 的旧条目可能不止一条（比如从旧系统导入的）：全部失效，
+            # supersedes 指向最近的一条（rows 按 valid_from 倒序，第一条最新）。
+            # 但只对非空 key 生效：空 key 是"无 key 事实"，不是同一个槽——
+            # 否则 import 一批无 key 事实会互相顶掉，永远只有最后一条活着。
+            supersedes = ""
+            if rows and key:
+                supersedes = str(rows[0].get("id") or "")
+                for row in rows:
+                    self._store.expire_memory_item(row["id"], now,
+                                                   designer=self.designer)
+            item = {
+                "id": "mem_" + uuid.uuid4().hex[:12],
+                "designer": self.designer, "project": self.project,
+                "scope": str(scope or "facts"), "kind": str(kind or "fact"),
+                "key": str(key or ""), "value": value,
+                "confidence": round(0.6 if confidence is None else float(confidence), 2),
+                "source_event": str(source or "")[:200],
+                "valid_from": now, "valid_to": None, "supersedes": supersedes,
+            }
+            self._store.add_memory_item(item)
+            item["created"] = True
+            return item
 
     def recall(self, query: str, scope: str = "", limit: int = 5,
                kind: str = "") -> list:
@@ -96,10 +120,21 @@ class MemoryService:
 
         打分因子全在明处：bigram 重叠 × 把握度 × 时间衰减，外加一条
         key 命中加权——查询里带着完整的 key（如人名"周"），或查询很短
-        且落在 key 里（如"周"），直接给强分。没有这条，单字 key 永远
-        凑不出 bigram，"周讲了什么"会冤枉地说想不起来。
+        且落在 key 里（如"周"），给小分保命。注意单字 key 只加 0.5：
+        够它不被 overlap==0 筛掉，但压不过正文的真实命中——否则
+        "周末讲什么"会把 key="周" 的无关条目顶到第一。
+        扫描上限是 self.recall_window（默认一万，可显式调大），不再硬编码。
         """
-        rows = self._items(scope=scope, kind=kind, active_only=True, limit=2000)
+        if int(limit) <= 0:
+            return []
+        rows = self._items(scope=scope, kind=kind, active_only=True,
+                           limit=self.recall_window)
+        if len(rows) >= self.recall_window:
+            # 窗口满了意味着最老的条目可能没参与打分——必须喊出来，
+            # 不能让"它没想起来"和"它根本没看到"无法区分
+            warnings.warn("recall 扫描已满 recall_window=%d，最老的条目可能未参与打分；"
+                          "请调大 MemoryService(recall_window=...)" % self.recall_window,
+                          RuntimeWarning, stacklevel=2)
         if not rows:
             return []
         query_str = re.sub(r"\s+", "", str(query or ""))
@@ -114,14 +149,15 @@ class MemoryService:
             # key 命中加权：完整 key 出现在查询里，或短查询落在 key 里
             if key and query_str and (key in query_str
                                       or (len(query_str) <= 2 and query_str in key)):
-                overlap += 2 * max(1, len(_bigrams(key)))
+                overlap += 0.5 if len(key) == 1 else 2 * len(_bigrams(key))
             if q and overlap == 0:
                 continue
             age = max(0.0, now - float(row.get("valid_from") or now)) / 86400.0
             decay = max(0.4, 1.0 - age / 60.0)
-            scored.append((overlap * float(row.get("confidence") or 0.6) * decay, row))
+            conf = row.get("confidence")
+            scored.append((overlap * (0.6 if conf is None else float(conf)) * decay, row))
         scored.sort(key=lambda x: -x[0])
-        return [row for _, row in scored[:max(1, limit)]]
+        return [row for _, row in scored[:int(limit)]]
 
     def forget(self, item_id: str) -> bool:
         if not self.enabled:
@@ -130,11 +166,15 @@ class MemoryService:
                 if str(r.get("id") or "") == str(item_id)]
         if not rows:
             return False
-        self._store.expire_memory_item(item_id, float(self._clock()))
+        self._store.expire_memory_item(item_id, float(self._clock()),
+                                       designer=self.designer)
         return True
 
     def import_items(self, items: list, scope: str = "facts", source: str = "legacy") -> int:
-        """把旧的 fact 字典幂等地导入统一条目表。"""
+        """把旧的 fact 字典幂等地导入统一条目表。
+
+        返回值是**新增条数**：去重命中的旧条目不计（重复导入返回 0）。
+        """
         n = 0
         for raw in items or []:
             if not isinstance(raw, dict) or not raw.get("text"):
@@ -147,12 +187,12 @@ class MemoryService:
                 confidence=float(raw.get("confidence") or 0.6),
                 ts=float(raw.get("ts") or self._clock()),
             )
-            if got:
+            if got and got.get("created"):
                 n += 1
         return n
 
     def import_relation(self, relation: dict, source: str = "legacy.relation") -> int:
-        """把旧的关系字典幂等地导入 relation scope。"""
+        """把旧的关系字典幂等地导入 relation scope。返回新增条数。"""
         n = 0
         if not isinstance(relation, dict):
             return 0
@@ -161,32 +201,38 @@ class MemoryService:
                 continue
             got = self.remember("relation", str(key), value, scope="relation",
                                 source=source, confidence=0.8)
-            if got:
+            if got and got.get("created"):
                 n += 1
         return n
 
     def import_profile(self, profile: dict, source: str = "legacy.profile") -> int:
-        """把旧的画像（preferences/lessons 列表）幂等地导入 experience scope。"""
+        """把旧的画像（preferences/lessons 列表）幂等地导入 experience scope。
+        返回新增条数。
+
+        key 用值的内容哈希而不是列表序号：源列表顺序变了不该重复插入，
+        序号 key 会把"同一条偏好换了个位置"当成新事实。
+        """
         n = 0
         if not isinstance(profile, dict):
             return 0
         for key in ("preferences", "lessons"):
-            for i, value in enumerate(profile.get(key) or []):
+            for value in profile.get(key) or []:
                 if not value:
                     continue
-                got = self.remember("profile:" + key, "%s:%d" % (key, i),
+                digest = hashlib.sha1(str(value).encode("utf-8")).hexdigest()[:12]
+                got = self.remember("profile:" + key, "%s:%s" % (key, digest),
                                     str(value), scope="experience", source=source,
                                     confidence=0.6)
-                if got:
+                if got and got.get("created"):
                     n += 1
         return n
 
     def import_mastery(self, rows: list, source: str = "legacy.mastery") -> int:
-        """把旧的掌握度记录幂等地导入 mastery scope。"""
+        """把旧的掌握度记录幂等地导入 mastery scope。返回新增条数。"""
         n = 0
         for cap, row in rows or []:
             got = self.remember("mastery", str(cap), row, scope="mastery",
                                 source=source, confidence=0.6)
-            if got:
+            if got and got.get("created"):
                 n += 1
         return n

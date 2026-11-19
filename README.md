@@ -11,7 +11,7 @@ artl-memory 是 ARTL 家族（ARTLESS 助理、ARTLE 系列）的记忆层，从
 说了什么原话**，每条记忆带着来源和把握度；记错了就标记失效，证据链留在原地。
 
 ```bash
-pip install artl-memory
+pip install .        # 本地源码安装（PyPI 包尚未发布）
 ```
 
 ## 为什么是 multi-person
@@ -19,8 +19,9 @@ pip install artl-memory
 市面上的 agent 记忆方案（Mem0、Letta、Zep……）都是**单用户**模型：一个用户，
 一份画像。artl-memory 从第一天就是多人模型：
 
-- **按人隔离**：王强的旧话不会进李四的口；技能/插件只见自己的记忆，
-  这不是约定，是它手里没有别人的入口（`MemView`）
+- **按人隔离**：王强的旧话不会进李四的口；技能/插件只见自己的记忆——
+  `MemView` 上不挂 store 本体，正常 API 面没有别人的入口
+  （同进程 introspection 挖得回去，要防恶意代码请上进程边界）
 - **逐句原话**：先存原文，判断当场重算；改写原文在这条链路里不存在
 - **证据链**：每条记忆带 `source_event`（它是从哪句话来的）和 `confidence`；
   改口了，旧值标记失效并挂在 `supersedes` 上——**失效不是删除**
@@ -61,8 +62,9 @@ python examples/two_people.py
 ## 边界（写在明处）
 
 - 值经 JSON 序列化存储：`tuple` 读出会变 `list`，自定义对象请自己序列化。
-- `recall` 是 O(n) 全量打分——为可解释性刻意不做索引，适用万级以下条目；
-  更大规模请在自己的后端里建索引。
+- `recall` 是 O(n) 全量打分——为可解释性刻意不做索引。扫描上限由
+  `MemoryService(recall_window=...)` 控制，默认 10000 条（对齐"万级以下"
+  的承诺）；超过这个规模请显式调大，或在自己的后端里建索引。
 
 ## 明确不做
 

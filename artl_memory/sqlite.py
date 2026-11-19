@@ -14,6 +14,7 @@ import json
 import sqlite3
 import threading
 import time
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -102,11 +103,17 @@ class SqliteMemoryStore:
         self._lock = threading.RLock()
         self._closed = False
         self._raw = None
+        # 坏文件被隔离过会置 True 并发警告：调用方能区分"连着正常空库"
+        # 和"数据被隔离、现在连的是重建的空库"，不再是静默失败。
+        self.quarantined = False
         try:
             self._db = self._open()
         except sqlite3.DatabaseError:
             # 文件坏了也不能让整个应用起不来：留个现场，重新开一个
             self._quarantine()
+            self.quarantined = True
+            warnings.warn("数据库文件损坏已隔离重建（原文件保留为 .corrupt-*）：%s"
+                          % self.path, RuntimeWarning, stacklevel=2)
             self._db = self._open()
 
     @property
@@ -158,21 +165,33 @@ class SqliteMemoryStore:
             except OSError:
                 try:
                     src.unlink()
+                    warnings.warn("坏文件隔离失败已直接删除：%s" % src,
+                                  RuntimeWarning, stacklevel=2)
                 except OSError:
-                    pass  # 关库失败，交给系统回收
+                    # 关库失败，交给系统回收；但不能无痕
+                    warnings.warn("坏文件隔离/删除均失败，交给系统回收：%s" % src,
+                                  RuntimeWarning, stacklevel=2)
 
     # ---------------- 隐私：把一个人整个抹掉 ----------------
     def purge_designer(self, designer: str) -> dict:
         """删除这个人的全部数据（ops/utterances/memory/memory_items/trace）。
 
         返回各表删掉的行数。这是"被遗忘权"的硬实现：不是标记，是真删。
+        secure_delete 让删除时覆写原页，VACUUM 重建库文件——否则已删的
+        明文会一直躺在文件空闲页里，"删除"就成了空话。
         """
         out = {}
         with self._lock:
+            self._db.execute("PRAGMA secure_delete=ON")
             for table in ("ops", "utterances", "memory", "memory_items", "trace"):
                 cur = self._db.execute(f"DELETE FROM {table} WHERE designer=?", (designer,))
                 out[table] = cur.rowcount or 0
             self._db.commit()
+            # VACUUM 不能在事务里跑；此时 commit 已完成，安全。
+            # 光 VACUUM 不够：WAL 文件里还留着删除前的整页镜像，
+            # 必须 checkpoint(TRUNCATE) 把 WAL 截成零字节，物理删除才算闭环。
+            self._db.execute("VACUUM")
+            self._db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         return out
 
     def close(self) -> None:
@@ -221,8 +240,9 @@ class SqliteMemoryStore:
                 (item.get("id"), item.get("designer") or "",
                  item.get("project") or "", item.get("scope") or "facts",
                  item.get("kind") or "fact", item.get("key") or "",
-                 json.dumps(item.get("value"), ensure_ascii=False),
-                 float(item.get("confidence") or 0.6),
+                 json.dumps(item.get("value"), ensure_ascii=False, default=str),
+                 (0.6 if item.get("confidence") is None
+                  else float(item.get("confidence"))),
                  item.get("source_event") or "", float(item.get("valid_from") or 0),
                  item.get("valid_to"), item.get("supersedes") or ""),
             )
@@ -245,7 +265,9 @@ class SqliteMemoryStore:
         if active_only:
             sql += " AND (valid_to IS NULL OR valid_to=0)"
         sql += " ORDER BY valid_from DESC LIMIT ?"
-        args.append(max(1, min(5000, int(limit))))
+        # 调用方给多少就是多少，不在这里偷偷设天花板——静默截断
+        # 意味着"最老的那条永远想不起来"，比慢更可怕。
+        args.append(max(1, int(limit)))
         with self._lock:
             rows = self._db.execute(sql, tuple(args)).fetchall()
         out = []
@@ -254,14 +276,27 @@ class SqliteMemoryStore:
             try:
                 d["value"] = json.loads(d.pop("value_json") or "{}")
             except Exception:
+                warnings.warn("memory_items.value_json 解析失败，按空值返回: %r"
+                              % (d.get("id"),), RuntimeWarning, stacklevel=2)
                 d["value"] = {}
             out.append(d)
         return out
 
-    def expire_memory_item(self, item_id: str, ts: float) -> None:
+    def expire_memory_item(self, item_id: str, ts: float, designer: str | None = None) -> None:
+        ts = float(ts)
+        if ts <= 0:
+            # valid_to=0 在读取侧被当作"有效"（历史兼容），放任 ts<=0 写进去
+            # 等于给"撤销失效"留后门。失效是证据链事件，必须带真实时间。
+            raise ValueError("expire 的时间戳必须 > 0")
         with self._lock:
-            self._db.execute("UPDATE memory_items SET valid_to=? WHERE id=?",
-                             (float(ts), item_id))
+            if designer is not None:
+                # 属主校验：拿到 id 不许作废别人的条目
+                self._db.execute(
+                    "UPDATE memory_items SET valid_to=? WHERE id=? AND designer=?",
+                    (ts, item_id, designer))
+            else:
+                self._db.execute("UPDATE memory_items SET valid_to=? WHERE id=?",
+                                 (ts, item_id))
             self._db.commit()
 
     # ---------------- op 链 ----------------
@@ -372,14 +407,29 @@ class SqliteMemoryStore:
         return int(row[0] if row else 0)
 
     def prune_utterances(self, designer: str, days: int = 7) -> int:
-        """超过 N 天：没引用过的整行删，有引用的正文清空（snippet 留着）。"""
+        """超过 N 天：没引用过的整行删，有引用的正文清空（snippet 留着）。
+
+        "有引用"的判定：snippet 非空（写入时标记），或被
+        memory_items.source_event 点名（证据链）。被引用的行先用正文
+        兜底 snippet——不清这一步，DELETE 会把证据链整行端走。
+        """
         cutoff = time.time() - days * 86400
+        _ref = ("EXISTS (SELECT 1 FROM memory_items mi "
+                "WHERE mi.designer=utterances.designer AND mi.source_event != '' "
+                "AND instr(mi.source_event, utterances.id) > 0)")
         with self._lock:
+            # 被记忆条目引用但 snippet 为空的：先用正文兜底 snippet，
+            # 让下面的 DELETE 自然绕过它，证据链不断
+            self._db.execute(
+                "UPDATE utterances SET snippet=substr(text,1,40) "
+                "WHERE designer=? AND ts<? AND (snippet IS NULL OR snippet='') "
+                "AND " + _ref, (designer, cutoff))
             n1 = self._db.execute(
                 "DELETE FROM utterances WHERE designer=? AND ts<? "
                 "AND (snippet IS NULL OR snippet='')", (designer, cutoff)).rowcount or 0
             n2 = self._db.execute(
-                "UPDATE utterances SET text='' WHERE designer=? AND ts<?",
+                "UPDATE utterances SET text='' WHERE designer=? AND ts<? "
+                "AND text!=''",  # 已清过的不再重复计数：prune 幂等
                 (designer, cutoff)).rowcount or 0
             self._db.commit()
         return int(n1) + int(n2)

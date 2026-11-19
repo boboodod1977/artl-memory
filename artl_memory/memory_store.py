@@ -10,10 +10,20 @@
 from __future__ import annotations
 
 import copy
+import json
 import time
 from typing import Any
 
 from .types import Op
+
+
+def _json_roundtrip(value: Any) -> Any:
+    """与 SQLite 后端同口径：值按 JSON 序列化存储。
+
+    tuple 读出变 list、datetime 变 str——边界写在 README，两个后端
+    必须长一样，否则同一段代码换个后端行为就变了。
+    """
+    return json.loads(json.dumps(value, ensure_ascii=False, default=str))
 
 
 class InMemoryStore:
@@ -36,7 +46,7 @@ class InMemoryStore:
             rows = [r for r in rows if float(r.get("ts") or 0) < before]
         out = rows[-limit:]
         out.reverse()                       # 最新在前，跟排查的视角一致
-        return out
+        return copy.deepcopy(out)           # 给副本：外部改嵌套值不许污染库
 
     # ---- op 链 -------------------------------------------------------------
     def append_op(self, op: Op) -> None:
@@ -59,6 +69,8 @@ class InMemoryStore:
         rows = [o for o in self._ops if o.designer == designer]
         if before:
             rows = [o for o in rows if float(o.ts) < before]
+        # 按 ts 排序，与 SQLite 后端口径一致（乱序写入不该有两种结果）
+        rows.sort(key=lambda o: float(o.ts or 0))
         return rows[-limit:]
 
     def count_ops(self, designer: str) -> int:
@@ -94,7 +106,9 @@ class InMemoryStore:
         cutoff = time.time() - days * 86400
         rows = [r for r in self._utt
                 if r.get("designer") == designer and float(r.get("ts") or 0) >= cutoff]
-        return rows[-limit:]
+        # 按 ts 排序，与 SQLite 后端口径一致（乱序写入不该有两种结果）
+        rows.sort(key=lambda r: float(r.get("ts") or 0))
+        return copy.deepcopy(rows[-limit:])  # 给副本：外部改不许污染库
 
     def count_utterances(self, designer: str, days: int | None = None) -> int:
         if days is None:
@@ -104,45 +118,71 @@ class InMemoryStore:
                    if r.get("designer") == designer and float(r.get("ts") or 0) >= cutoff)
 
     def prune_utterances(self, designer: str, days: int = 7) -> int:
-        """超过 N 天：没引用的整行删，有引用的清正文留 snippet。
+        """超过 N 天：没引用过的整行删，有引用的正文清空（snippet 留着）。
 
+        "有引用"的判定：snippet 非空（写入时标记），或被
+        memory_items.source_event 点名（证据链）。被引用的行先用正文
+        兜底 snippet 再清正文——证据链不能悬空。
         返回值 = 删除条数 + 清正文条数（与 SQLite 后端口径一致）。
         """
         cutoff = time.time() - days * 86400
+        referenced = [str(it.get("source_event") or "")
+                      for it in self._items.values()
+                      if it.get("designer") == designer and it.get("source_event")]
+
+        def _is_referenced(rid) -> bool:
+            rid = str(rid or "")
+            # 子串匹配是刻意保守的：误判的代价是多留一条证据，方向安全
+            return bool(rid) and any(rid in ref for ref in referenced)
+
         n = 0
         keep = []
         for r in self._utt:
             if r.get("designer") == designer and float(r.get("ts") or 0) < cutoff:
-                n += 1
-                if r.get("snippet"):
-                    r["text"] = ""          # 有引用的留 snippet，正文清掉
+                if r.get("snippet") or _is_referenced(r.get("id")):
+                    if r.get("text"):
+                        if not r.get("snippet"):
+                            r["snippet"] = str(r.get("text") or "")[:40]
+                        r["text"] = ""      # 有引用的留 snippet，正文清掉
+                        n += 1
+                    # 正文已清过的不再计数：prune 幂等
                 else:
+                    n += 1
                     continue                # 没引用的整行删掉
             keep.append(r)
         self._utt = keep
         return n
 
     # ---- 记忆（按 owner/designer/project 隔离） ------------------------------
+    @staticmethod
+    def _norm_project(project) -> str:
+        # None 与 "" 归一为同一个槽，与 SQLite 后端的 _key() 口径一致
+        return "" if project is None else str(project)
+
     def set_mem(self, owner, designer, project, key, value, confidence: float = 1.0) -> None:
-        slot = (owner, designer, project)
+        slot = (owner, designer, self._norm_project(project))
         self._mem[slot] = self._mem.get(slot, {})
-        self._mem[slot][key] = {"value": value, "confidence": confidence, "ts": time.time()}
+        self._mem[slot][key] = {"value": _json_roundtrip(value),
+                                "confidence": confidence, "ts": time.time()}
 
     def get_mem(self, owner, designer, project, key, default: Any = None) -> Any:
-        row = self._mem.get((owner, designer, project), {}).get(key)
+        row = self._mem.get((owner, designer, self._norm_project(project)), {}).get(key)
         return default if row is None else row["value"]
 
     def all_mem(self, owner, designer, project=None) -> dict:
-        rows = self._mem.get((owner, designer, project), {})
+        rows = self._mem.get((owner, designer, self._norm_project(project)), {})
         return {k: v["value"] for k, v in rows.items()}
 
     def snapshot_mem(self, owner, designer, project=None) -> dict:
         # 深拷贝：快照是给人看的，改动快照不许污染库（SQLite 版天然是新对象）
-        return copy.deepcopy(self._mem.get((owner, designer, project), {}))
+        return copy.deepcopy(
+            self._mem.get((owner, designer, self._norm_project(project)), {}))
 
     # ---- 统一记忆条目（证据链） ----------------------------------------------
     def add_memory_item(self, item: dict) -> None:
-        self._items[str(item.get("id"))] = dict(item)
+        item = dict(item)
+        item["value"] = _json_roundtrip(item.get("value"))
+        self._items[str(item.get("id"))] = item
 
     def memory_items(self, designer: str, project: str = "", scope: str = "",
                      kind: str = "", key: str = "", active_only: bool = True,
@@ -159,13 +199,23 @@ class InMemoryStore:
                 continue
             if active_only and row.get("valid_to"):
                 continue
-            out.append(dict(row))
+            out.append(copy.deepcopy(row))  # 深拷贝：外部改嵌套值不许污染库
         out.sort(key=lambda r: -float(r.get("valid_from") or 0))
-        return out[:max(1, min(5000, int(limit)))]
+        # 调用方给多少就是多少，不在这里偷偷设天花板
+        return out[:max(1, int(limit))]
 
-    def expire_memory_item(self, item_id: str, ts: float) -> None:
-        if item_id in self._items:
-            self._items[item_id]["valid_to"] = float(ts)
+    def expire_memory_item(self, item_id: str, ts: float, designer: str | None = None) -> None:
+        ts = float(ts)
+        if ts <= 0:
+            # truthy 判断下 valid_to=0 等于"恢复有效"，这是撤销失效的后门
+            raise ValueError("expire 的时间戳必须 > 0")
+        row = self._items.get(item_id)
+        if row is None:
+            return
+        # 属主校验：拿到 id 不许作废别人的条目
+        if designer is not None and row.get("designer") != designer:
+            return
+        row["valid_to"] = ts
 
     # ---- 隐私：把一个人整个抹掉 ----------------------------------------------
     def purge_designer(self, designer: str) -> dict:

@@ -15,9 +15,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      # 双后端一致性 + 对抗性测试 + 示例能跑，三道门
+      # 双后端一致性 + 对抗性测试 + 回归钉死 + 示例能跑，四道门
       - run: python tests/test_conformance.py
       - run: python tests/test_adversarial.py
+      - run: python tests/test_regressions.py
       - run: python examples/two_people.py
 
   package:

@@ -80,16 +80,16 @@ def test_purge_idempotent_and_surgical(make):
     assert m1.recall("预算") == [], "被 purge 的人必须真的查无此人"
 
 
-def test_recall_perf_2000_items():
-    """O(n) 承诺万级以下可用：2000 条召回必须够快。
+def test_recall_perf_2000_items(make):
+    """O(n) 承诺万级以下可用：2000 条 active 条目召回必须够快。
 
-    只测内存版：SQLite 版的瓶颈在写入（逐条 commit），那是磁盘的事；
-    召回路径两后端同构。
+    key 全部唯一——旧写法 key%50 去重后只剩 50 条 active，名不副实。
+    两后端都测：SQLite 慢在写入（逐条 commit），召回路径同构。
     """
-    s = InMemoryStore()
+    s = make()
     mem = MemoryService(s, designer="d")
     for i in range(2000):
-        mem.remember("fact", "key%d" % (i % 50), "值%d" % i,
+        mem.remember("fact", "key%d" % i, "值%d" % i,
                      confidence=0.6, ts=time.time() - i)
     t0 = time.time()
     assert mem.recall("值1999")
@@ -103,13 +103,9 @@ _TESTS = [v for k, v in sorted(globals().items())
 def main():
     n_pass = n_fail = 0
     for fn in _TESTS:
-        if fn is test_recall_perf_2000_items:
-            variants = [("memory", _make_memory)]
-        else:
-            variants = _BACKENDS
-        for name, make in variants:
+        for name, make in _BACKENDS:
             try:
-                fn(make) if fn is not test_recall_perf_2000_items else fn()
+                fn(make)
                 n_pass += 1
                 print(f"  PASS {fn.__name__} [{name}]")
             except AssertionError as exc:
