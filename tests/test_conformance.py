@@ -6,6 +6,7 @@
     pytest tests/                         # 标准 pytest
 """
 
+import json
 import sys
 import tempfile
 import time
@@ -208,13 +209,39 @@ def test_per_key_latest(make):
         "每个槽只留最新有效、无 key 不进保底: %r" % got
 
 
+def test_export_designer(make):
+    """GDPR 导出：五表数据全在、只含本人的、条目解析成 API 形态。"""
+    s = make()
+    mem = MemoryService(s, designer="d")
+    mem.remember("fact", "预算", "三十万", ts=1.0, source="utterance:u1")
+    mem.remember("fact", "预算", "四十万", ts=2.0, source="utterance:u2")
+    s.add_utterance("d", {"id": "u1", "text": "预算三十万", "ts": 1.0})
+    s.append_op(_op("d", "第一句", 1.0))
+    s.append_trace("d", {"id": "t1", "ts": 1.0, "kind": "turn", "steps": "[]"})
+    s.set_mem("core", "d", None, "口味", "不吃香菜", 0.9)
+    MemoryService(s, designer="other").remember("fact", "秘密", "别人的", ts=1.0)
+
+    data = s.export_designer("d")
+    assert data["format"] == "artl-memory-export" and data["designer"] == "d"
+    c = data["counts"]
+    assert c["memory_items"] == 2, "改口的旧条也在导出里（证据链不丢）"
+    assert c["utterances"] == 1 and c["ops"] == 1 and c["trace"] == 1
+    assert c["memory"] == 1
+    items = data["tables"]["memory_items"]
+    assert {r["value"] for r in items} == {"三十万", "四十万"}, \
+        "value_json 必须解析成 API 形态"
+    blob = json.dumps(data, ensure_ascii=False)
+    assert "别人的" not in blob, "导出不许带出别人的数据"
+
+
 def main():
     n_pass = n_fail = 0
     backend_tests = (test_mem_isolation, test_op_chain, test_utterances_prune,
                      test_snapshot_ts_is_real, test_snapshot_cannot_pollute_store,
                      test_count_utterances_none_means_all, test_purge_designer,
                      test_service_evidence_chain, test_service_decay_prefers_fresh,
-                     test_recall_hits_single_char_key, test_per_key_latest)
+                     test_recall_hits_single_char_key, test_per_key_latest,
+                     test_export_designer)
     for name, make in _BACKENDS:
         for fn in backend_tests:
             try:

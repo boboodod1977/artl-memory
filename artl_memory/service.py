@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import random
 import re
 import threading
@@ -19,6 +20,7 @@ import time
 import uuid
 import warnings
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass
@@ -262,6 +264,39 @@ class MemoryService:
             scored.append((relevance * conf_f * decay, row2))
         scored.sort(key=lambda x: -x[0])
         return [row for _, row in scored[:int(limit)]]
+
+    def export_designer(self, path: str | Path | None = None) -> dict:
+        """GDPR 数据可携带：这个人五张表的全部数据打包成一份 dict。
+
+        给了 path 就同时写成 UTF-8 JSON 文件（交付给本人的格式）。
+        查数据（export）+ 删数据（store.purge_designer）两项权利成对。
+        """
+        if not self.enabled:
+            return {}
+        data = self._store.export_designer(self.designer)
+        if path:
+            Path(path).write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8")
+        return data
+
+    def evidence_chain(self, item_id: str) -> list:
+        """顺着 supersedes 往回走：[当前条目, ..., 最早条目]。
+
+        每一环都带 source_event 和 valid_to——"它现在这么认为，之前那么
+        认为，依据分别是哪句原话"一条链说清。找不到 id 返回空列表。
+        """
+        if not self.enabled:
+            return []
+        by_id = {str(r.get("id") or ""): r
+                 for r in self._items(active_only=False)}
+        chain, seen = [], set()
+        cur = by_id.get(str(item_id or ""))
+        while cur is not None and cur.get("id") not in seen:
+            seen.add(cur.get("id"))
+            chain.append(cur)
+            cur = by_id.get(str(cur.get("supersedes") or ""))
+        return chain
 
     def forget(self, item_id: str) -> bool:
         if not self.enabled:

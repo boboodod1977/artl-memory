@@ -258,6 +258,37 @@ class InMemoryStore:
                 "memory_items": n_items - len(self._items),
                 "trace": n_trace - len(self._trace)}
 
+    def export_designer(self, designer: str) -> dict:
+        """GDPR 数据可携带：这个人的全部数据打包成一份可核验的 dict。
+
+        导出是读取不是脱敏——这是本人的数据副本，配合 purge_designer
+        覆盖"查数据、删数据"两项权利。
+        """
+        import dataclasses
+        ops = [dataclasses.asdict(o) if dataclasses.is_dataclass(o) else dict(o)
+               for o in self._ops if o.designer == designer]
+        mem_rows = []
+        for (owner, d, project), rows in self._mem.items():
+            if d != designer:
+                continue
+            for k, v in rows.items():
+                row = {"owner": owner, "designer": d, "project": project, "key": k}
+                row.update(copy.deepcopy(v))
+                mem_rows.append(row)
+        utt = [copy.deepcopy(r) for r in self._utt
+               if r.get("designer") == designer]
+        trace = [copy.deepcopy(r) for r in self._trace
+                 if r.get("designer") == designer]
+        items = [copy.deepcopy(r) for r in self._items.values()
+                 if r.get("designer") == designer]
+        items.sort(key=lambda r: float(r.get("valid_from") or 0))
+        tables = {"ops": ops, "utterances": utt, "memory": mem_rows,
+                  "memory_items": items, "trace": trace}
+        return {"format": "artl-memory-export", "format_version": 1,
+                "designer": designer, "exported_at": time.time(),
+                "tables": tables,
+                "counts": {k: len(v) for k, v in tables.items()}}
+
     # ---- 生命周期 -------------------------------------------------------------
     @contextmanager
     def batch(self):

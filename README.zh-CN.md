@@ -124,6 +124,20 @@ mem2 = MemoryService(store, designer="王强",
 - scorer 挂了（API 宕了）：警告 + 退化纯字词打分，召回不跟着死
 - `pip install artl-memory[semantic]`；不装就是纯零依赖，行为一字不变
 
+## 证据链溯源与 GDPR（0.4+）
+
+```python
+chain = mem.evidence_chain(item_id)      # [现在, ..., 最早]，每环带来源和失效时间
+data  = mem.export_designer("王强.json") # 五表全量打包成 UTF-8 JSON（查数据）
+store.purge_designer("王强")             # 物理硬删，字节级验证（删数据）
+```
+
+查数据 + 删数据两项权利成对闭环；回归测试钉死"purge 后导出必须全空"。
+
+召回质量的**公开评测**在 [benchmarks/](benchmarks/)：3 人物、12 写入、
+10 查询全部写死在脚本里，字符串包含判定（裁判不是选手），字面命中 /
+改口时效 / 按人隔离 / 换说法单列，Mem0 对照一键可跑。
+
 ## 边界（写在明处）
 
 - 值经 JSON 序列化存储：`tuple` 读出会变 `list`，自定义对象请自己序列化。

@@ -2,6 +2,27 @@
 
 本项目遵循语义化版本。0.x 阶段： minor 可能含不兼容变更，patch 只修 bug。
 
+## [0.4.0] - 2026-11-19
+
+GROK 路线图的第三步：把"可信"从口号变成可交付物。
+103 项测试（回归 67 + 一致性 26 + 对抗 10）双后端通过。
+
+### 新增
+
+- **GDPR 数据可携带**：`store.export_designer(designer)` 把这个人的五张表
+  （ops / utterances / memory / memory_items / trace）全量打包成可核验的
+  dict；`MemoryService.export_designer(path)` 顺手写成 UTF-8 JSON 文件。
+  查数据（export）+ 删数据（purge_designer 物理硬删）两项权利成对闭环，
+  回归测试钉死"purge 后导出必须全空"。
+- **证据链溯源**：`MemoryService.evidence_chain(item_id)` 顺 supersedes
+  从新走到旧——"它现在这么认为、之前那么认为、依据分别是哪句原话"
+  一条链说清，每环带 source_event 和 valid_to。配合 0.3 的 recall_detail，
+  "为什么召回这条"全因子可查。
+- **公开评测** `benchmarks/recall_benchmark.py`：3 人物、12 写入、10 查询
+  全部写死在脚本里，字符串包含判定（裁判不是选手），字面命中 / 改口时效 /
+  按人隔离 / 换说法单列，违规串供计数。Mem0 对照 adapter 内置
+  （`--with-mem0`，默认配置），公平性约定写在 benchmarks/README.md。
+
 ## [0.3.0] - 2026-11-19
 
 GROK 四步路线图的第二步：语义做成可选插口，核心继续零依赖。

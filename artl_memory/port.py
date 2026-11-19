@@ -84,5 +84,13 @@ class MemoryStore(Protocol):
     # ---- 隐私：把一个人整个抹掉 ---------------------------------------------
     def purge_designer(self, designer: str) -> dict: ...
 
+    # ---- GDPR 数据可携带：这个人的全部数据打包导出 ---------------------------
+    def export_designer(self, designer: str) -> dict:
+        """返回 {"format", "format_version", "designer", "exported_at",
+        "tables": {ops, utterances, memory, memory_items, trace}, "counts"}。
+        memory_items 一律解析成 API 形态（value_json → value）；其余表行
+        形状随后端存储。导出是读取，不是脱敏——这是本人的数据副本。"""
+        ...
+
     # ---- 生命周期 ----------------------------------------------------------
     def close(self) -> None: ...

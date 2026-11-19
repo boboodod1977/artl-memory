@@ -274,6 +274,40 @@ class SqliteMemoryStore:
             self._db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         return out
 
+    def export_designer(self, designer: str) -> dict:
+        """GDPR 数据可携带：这个人的全部数据打包成一份可核验的 dict。
+
+        memory_items 解析成 API 形态（value_json → value）；memory 表的
+        value 是 JSON 字符串，同步解析。导出是读取不是脱敏——这是本人的
+        数据副本，配合 purge_designer 覆盖"查数据、删数据"两项权利。
+        """
+        tables: dict = {}
+        with self._lock:
+            for name, order in (("ops", "ts"), ("utterances", "ts"),
+                                ("memory", "ts"), ("trace", "ts"),
+                                ("memory_items", "valid_from")):
+                rows = self._db.execute(
+                    "SELECT * FROM %s WHERE designer=? ORDER BY %s"
+                    % (name, order), (designer,)).fetchall()
+                if name == "memory_items":
+                    tables[name] = [self._row_to_item(r) for r in rows]
+                elif name == "memory":
+                    out_rows = []
+                    for r in rows:
+                        d = {k: r[k] for k in r.keys()}
+                        try:
+                            d["value"] = json.loads(d.get("value") or "null")
+                        except Exception:
+                            pass  # 非 JSON 的历史数据按原样导出
+                        out_rows.append(d)
+                    tables[name] = out_rows
+                else:
+                    tables[name] = [{k: r[k] for k in r.keys()} for r in rows]
+        return {"format": "artl-memory-export", "format_version": 1,
+                "designer": designer, "exported_at": time.time(),
+                "tables": tables,
+                "counts": {k: len(v) for k, v in tables.items()}}
+
     def close(self) -> None:
         with self._lock:
             if self._closed:

@@ -595,6 +595,49 @@ def test_recall_detail_formula(make):
     assert abs(d["decay"] - expect_decay) < 1e-5, "decay 对不上: %r" % d
 
 
+def test_export_then_purge_leaves_nothing(make):
+    """查数据 + 删数据的完整闭环：先导出留副本，purge 后导出必须全空。"""
+    store = make()
+    mem = MemoryService(store, designer="d")
+    mem.remember("fact", "预算", "四十万", ts=1.0, source="utterance:u2")
+    store.add_utterance("d", {"id": "u2", "text": "四十万", "ts": 1.0})
+    before = mem.export_designer()
+    assert before["counts"]["memory_items"] == 1
+    store.purge_designer("d")
+    after = mem.export_designer()
+    assert all(n == 0 for n in after["counts"].values()), \
+        "purge 后导出必须全空: %r" % after["counts"]
+
+
+def test_evidence_chain_walks_supersedes(make):
+    """证据链溯源：顺 supersedes 从新走到旧，每环带来源和失效时间。"""
+    store = make()
+    mem = MemoryService(store, designer="d")
+    a = mem.remember("fact", "预算", "三十万", ts=1.0, source="utterance:u1")
+    b = mem.remember("fact", "预算", "三十五万", ts=2.0, source="utterance:u2")
+    c = mem.remember("fact", "预算", "四十万", ts=3.0, source="utterance:u3")
+    chain = mem.evidence_chain(c["id"])
+    assert [x["value"] for x in chain] == ["四十万", "三十五万", "三十万"]
+    assert [x["id"] for x in chain] == [c["id"], b["id"], a["id"]]
+    assert all(x.get("source_event") for x in chain), "每一环都得带来源"
+    assert chain[1]["valid_to"] and chain[2]["valid_to"], \
+        "被替代的环带着失效时间"
+    assert mem.evidence_chain("mem_nonexistent") == []
+
+
+def test_export_file_roundtrip():
+    """服务层写出的 JSON 文件能原样读回，UTF-8 中文不炸（仅 SQLite）。"""
+    import json as _json
+    store = SqliteMemoryStore(Path(tempfile.mkdtemp()) / "e.db")
+    mem = MemoryService(store, designer="d")
+    mem.remember("fact", "口味", "不吃香菜", ts=1.0)
+    out = Path(tempfile.mkdtemp()) / "export.json"
+    data = mem.export_designer(out)
+    loaded = _json.loads(out.read_text(encoding="utf-8"))
+    assert loaded == data
+    assert loaded["tables"]["memory_items"][0]["value"] == "不吃香菜"
+
+
 def main():
     import inspect
     n_pass = n_fail = 0

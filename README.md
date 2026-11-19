@@ -148,6 +148,23 @@ mem2 = MemoryService(store, designer="王强",
 - `pip install artl-memory[semantic]`; without it the core is pure stdlib and
   behavior is byte-identical
 
+## Evidence chains & GDPR (0.4+)
+
+```python
+chain = mem.evidence_chain(item_id)      # [now, ..., oldest] — source & expiry on every link
+data  = mem.export_designer("王强.json") # all five tables as UTF-8 JSON (right to access)
+store.purge_designer("王强")             # physical hard delete, byte-level verified (right to erasure)
+```
+
+Access and erasure as a closed pair; a regression test pins "export after purge
+must be empty".
+
+The **public recall benchmark** lives in [benchmarks/](benchmarks/): 3 people,
+12 writes, 10 queries — all pinned in the script, judged by substring match (the
+referee is never a contestant), with literal-hit / correction-recency /
+isolation / paraphrase scored separately. A Mem0 comparison adapter is one
+flag away.
+
 ## Boundaries (stated plainly)
 
 - Values are stored JSON-serialized: `tuple` comes back as `list`; serialize custom
