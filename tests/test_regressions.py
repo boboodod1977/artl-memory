@@ -406,15 +406,20 @@ def test_multiprocess_same_key_single_active():
         "m = MemoryService(SqliteMemoryStore(%r), designer='d');"
         "[m.remember('fact', '槽', sys.argv[1], ts=time.time()) for _ in range(20)]"
     ) % (str(Path(__file__).resolve().parents[1]), str(db))
-    ps = [subprocess.Popen([sys.executable, "-c", worker, name])
+    ps = [subprocess.Popen([sys.executable, "-c", worker, name],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
           for name in ("甲", "乙")]
-    for p in ps:
-        assert p.wait() == 0
+    codes = [p.wait() for p in ps]
+    err = "\n".join(p.stderr.read().decode("utf-8", "replace") for p in ps)
     mem = MemoryService(SqliteMemoryStore(db), designer="d")
     alive = mem._items(key="槽")
-    assert len(alive) == 1, "多进程下同 key 只能活一条，得到 %d 条" % len(alive)
     total = mem._items(key="槽", active_only=False)
-    assert len(total) >= 2, "败者必须留在证据链里，不是被吞掉"
+    diag = "codes=%s alive=%d total=%d rows=%r stderr=%s" % (
+        codes, len(alive), len(total),
+        [(r.get("value"), r.get("valid_to")) for r in total], err[-500:])
+    assert codes == [0, 0], "子进程异常退出: " + diag
+    assert len(alive) == 1, "多进程下同 key 只能活一条: " + diag
+    assert len(total) >= 2, "败者必须留在证据链里，不是被吞掉: " + diag
 
 
 def test_schema_v1_to_v2_migration():

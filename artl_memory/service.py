@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import hashlib
+import random
 import re
 import threading
 import time
@@ -80,7 +81,7 @@ class MemoryService:
             return None
         with self._lock:  # check-then-act 全程原子，并发下同 key 不双写
             now = float(ts if ts is not None else self._clock())
-            for attempt in range(3):  # 撞跨进程唯一约束时重读收敛再重试
+            for attempt in range(5):  # 撞跨进程唯一约束时重读收敛再重试
                 # 去重必须限定同 key：只按 scope+kind 查会把"别人记过同样的值"
                 # 也命中，导致第二个人的记忆被吞掉并返回第一个人的条目。
                 rows = self._items(scope=scope, kind=kind, key=key)
@@ -121,7 +122,10 @@ class MemoryService:
                     # SQLite 唯一索引（同槽位只允许一条有效）被另一个进程
                     # 抢先触发：回炉重读，按上面的去重/替代逻辑收敛。
                     # 用异常名判断，避免服务层反过来 import 后端模块。
-                    if type(exc).__name__ == "ConflictError" and attempt < 2:
+                    # 退避带抖动：高负载机器上两进程同步重试会反复互撞
+                    if type(exc).__name__ == "ConflictError" and attempt < 4:
+                        time.sleep(0.01 * (attempt + 1)
+                                   + random.random() * 0.01)
                         continue
                     raise
                 item["created"] = True
