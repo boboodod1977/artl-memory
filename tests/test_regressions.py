@@ -363,6 +363,87 @@ def test_recall_window_full_warns(make):
         "窗口满了却没警告"
 
 
+def test_exact_key_outranks_containing_keys(make):
+    """查单字"周"：精确 key="周" 必须压过"周报""周末"这类包含它的 key。"""
+    mem = MemoryService(make(), designer="d")
+    mem.remember("note", "周报", "周五交周报", confidence=0.9, ts=time.time())
+    mem.remember("note", "周末", "周末去看样板间", confidence=0.9, ts=time.time())
+    mem.remember("note", "周", "周先生住 3 栋", confidence=0.9, ts=time.time())
+    hits = mem.recall("周")
+    assert hits and hits[0]["key"] == "周", \
+        "精确 key 该第一，得到 %r" % [h["key"] for h in hits]
+
+
+def test_remember_many_batch(make):
+    """批量写入：一次落盘、照常去重、返回新增条数。"""
+    mem = MemoryService(make(), designer="d")
+    rows = [{"key": "k%d" % i, "value": "v%d" % i} for i in range(500)]
+    t0 = time.time()
+    n = mem.remember_many(rows)
+    dt = time.time() - t0
+    assert n == 500
+    assert mem.remember_many(rows) == 0, "重放不该新增"
+    assert dt < 5, "500 条批量写入不该超过 5 秒（逐条 commit 时代约 1 秒+/千条）"
+    assert mem.recall("v499"), "批量写入的条目必须能召回"
+
+
+def test_multiprocess_same_key_single_active():
+    """多进程抢写同 key：唯一索引兜底，最终只能活一条（SQLite 专属）。
+
+    线程锁管不到别的进程——这是评审实测打穿的洞：
+    两进程各写「槽=甲/乙」后两条都活着，改口链断掉。
+    """
+    import subprocess
+    db = Path(tempfile.mkdtemp()) / "mp.db"
+    worker = (
+        "import sys, time; sys.path.insert(0, %r);"
+        "from artl_memory import SqliteMemoryStore, MemoryService;"
+        "m = MemoryService(SqliteMemoryStore(%r), designer='d');"
+        "[m.remember('fact', '槽', sys.argv[1], ts=time.time()) for _ in range(20)]"
+    ) % (str(Path(__file__).resolve().parents[1]), str(db))
+    ps = [subprocess.Popen([sys.executable, "-c", worker, name])
+          for name in ("甲", "乙")]
+    for p in ps:
+        assert p.wait() == 0
+    mem = MemoryService(SqliteMemoryStore(db), designer="d")
+    alive = mem._items(key="槽")
+    assert len(alive) == 1, "多进程下同 key 只能活一条，得到 %d 条" % len(alive)
+    total = mem._items(key="槽", active_only=False)
+    assert len(total) >= 2, "败者必须留在证据链里，不是被吞掉"
+
+
+def test_schema_v1_to_v2_migration():
+    """老库升级：带着同槽重复有效行的 v1 库，重开后收敛到一条并建好索引。"""
+    import sqlite3 as _sq
+    tmp = Path(tempfile.mkdtemp()) / "old.db"
+    s = SqliteMemoryStore(tmp)
+    # 手工把库降回 v1 的样子：删唯一索引、造重复有效行、版本号拨回 1
+    s._db.execute("DROP INDEX IF EXISTS uniq_active_key")
+    s._db.execute("DROP INDEX IF EXISTS uniq_active_keyless")
+    s._db.execute("PRAGMA user_version=1")
+    for i in range(3):
+        s._db.execute(
+            "INSERT INTO memory_items (id,designer,project,scope,kind,key,"
+            "value_json,confidence,source_event,valid_from,valid_to,supersedes) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,NULL,?)",
+            ("dup%d" % i, "d", "", "facts", "fact", "预算",
+             '"三十万"', 0.6, "", 1000 + i, ""))
+    s._db.commit()
+    s.close()
+    # 重开触发迁移
+    s2 = SqliteMemoryStore(tmp)
+    mem = MemoryService(s2, designer="d")
+    alive = mem._items(key="预算")
+    assert len(alive) == 1, "迁移后同槽只能活一条，得到 %d" % len(alive)
+    assert alive[0]["valid_from"] == 1002, "留下的该是最新那条"
+    idx = s2._db.execute(
+        "SELECT name FROM sqlite_master WHERE name='uniq_active_key'").fetchone()
+    assert idx, "唯一索引必须建好"
+    v = _sq.connect(str(tmp)).execute("PRAGMA user_version").fetchone()[0]
+    assert v == 2
+    s2.close()
+
+
 def main():
     import inspect
     n_pass = n_fail = 0

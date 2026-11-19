@@ -15,6 +15,7 @@ import sqlite3
 import threading
 import time
 import warnings
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -89,6 +90,46 @@ CREATE INDEX IF NOT EXISTS idx_memory_scope
     ON memory_items(designer, project, scope, kind, key);
 """
 
+# v2 单独成段：老库可能有历史重复，必须先收敛再加唯一约束，
+# 所以这两个索引不能进 SCHEMA 跟建表一起跑
+SCHEMA_V2 = """
+-- 跨进程不变量：同槽位同 key 只允许一条有效（进程锁管不到别的进程，
+-- 只有数据库层约束管得到）。空 key 是无 key 事实集合，按值去重。
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_active_key
+    ON memory_items(designer, project, scope, kind, key)
+    WHERE valid_to IS NULL AND key != '';
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_active_keyless
+    ON memory_items(designer, project, scope, kind, value_json)
+    WHERE valid_to IS NULL AND key = '';
+"""
+
+
+def _dedupe_active(db) -> None:
+    """v1 → v2：同槽位（designer/project/scope/kind/key）可能有多条有效，
+    每组只留 rowid 最大（最后写入）的一条，其余标记失效。"""
+    now = time.time()
+    db.execute("""
+        UPDATE memory_items SET valid_to=?
+        WHERE valid_to IS NULL AND key != '' AND rowid NOT IN (
+            SELECT MAX(rowid) FROM memory_items
+            WHERE valid_to IS NULL AND key != ''
+            GROUP BY designer, project, scope, kind, key)
+    """, (now,))
+    db.execute("""
+        UPDATE memory_items SET valid_to=?
+        WHERE valid_to IS NULL AND key = '' AND rowid NOT IN (
+            SELECT MAX(rowid) FROM memory_items
+            WHERE valid_to IS NULL AND key = ''
+            GROUP BY designer, project, scope, kind, value_json)
+    """, (now,))
+
+
+class ConflictError(Exception):
+    """唯一约束冲突：另一个进程抢先写入了同槽位的有效条目。
+
+    服务层收到它应该重读当前有效条目，按去重/替代逻辑收敛后重试。
+    """
+
 
 def _key(project) -> str:
     return "" if project is None else str(project)
@@ -103,6 +144,7 @@ class SqliteMemoryStore:
         self._lock = threading.RLock()
         self._closed = False
         self._raw = None
+        self._batch_depth = 0
         # 坏文件被隔离过会置 True 并发警告：调用方能区分"连着正常空库"
         # 和"数据被隔离、现在连的是重建的空库"，不再是静默失败。
         self.quarantined = False
@@ -141,8 +183,16 @@ class SqliteMemoryStore:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript(SCHEMA)
             # schema 版本号：以后加表/改结构靠它做迁移判断，不靠猜
-            if db.execute("PRAGMA user_version").fetchone()[0] == 0:
-                db.execute("PRAGMA user_version=1")
+            v = db.execute("PRAGMA user_version").fetchone()[0]
+            if v == 0:
+                db.executescript(SCHEMA_V2)
+                db.execute("PRAGMA user_version=2")
+            elif v == 1:
+                # v1 → v2：唯一索引上线前，先把历史遗留的同槽多条有效
+                # 收敛成每组只留最新的一条，其余标记失效
+                _dedupe_active(db)
+                db.executescript(SCHEMA_V2)
+                db.execute("PRAGMA user_version=2")
             db.commit()
         except Exception:
             # 必须先关掉：Windows 下被占用的文件重命名会失败，
@@ -186,8 +236,9 @@ class SqliteMemoryStore:
             for table in ("ops", "utterances", "memory", "memory_items", "trace"):
                 cur = self._db.execute(f"DELETE FROM {table} WHERE designer=?", (designer,))
                 out[table] = cur.rowcount or 0
-            self._db.commit()
-            # VACUUM 不能在事务里跑；此时 commit 已完成，安全。
+            self._db.commit()  # 必须真提交：下一步 VACUUM 不能在事务里跑，
+            # 所以 purge_designer 不允许包在 batch() 里
+            # VACUUM 重建库文件——否则已删的明文会一直躺在文件空闲页里。
             # 光 VACUUM 不够：WAL 文件里还留着删除前的整页镜像，
             # 必须 checkpoint(TRUNCATE) 把 WAL 截成零字节，物理删除才算闭环。
             self._db.execute("VACUUM")
@@ -203,6 +254,28 @@ class SqliteMemoryStore:
             if db is not None:
                 db.close()
 
+    # ---------------- 批量写入 ----------------
+    @contextmanager
+    def batch(self):
+        """批量写入上下文：其间所有写的 commit 推迟到退出时一次落盘。
+
+        5 万条逐条 commit 要 77 秒，真正的瓶颈是每条一次 fsync；
+        批量模式下SQLite 仍然逐条执行，但只 fsync 一次。
+        """
+        with self._lock:
+            self._batch_depth += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._batch_depth -= 1
+                if self._batch_depth == 0:
+                    self._db.commit()
+
+    def _commit(self) -> None:
+        if self._batch_depth == 0:
+            self._db.commit()
+
     # ---------------- 决策轨迹（append-only，只增不改） ----------------
     def append_trace(self, designer: str, row: dict) -> None:
         with self._lock:
@@ -213,7 +286,7 @@ class SqliteMemoryStore:
                  row.get("kind") or "turn", float(row.get("ts") or 0),
                  json.dumps(row.get("steps") or [], ensure_ascii=False, default=str)),
             )
-            self._db.commit()
+            self._commit()
 
     def traces(self, designer: str, limit: int = 50, before: float = 0.0) -> list:
         with self._lock:
@@ -232,21 +305,26 @@ class SqliteMemoryStore:
     # ---------------- 统一记忆条目（证据链） ----------------
     def add_memory_item(self, item: dict) -> None:
         with self._lock:
-            self._db.execute(
-                "INSERT OR REPLACE INTO memory_items "
-                "(id,designer,project,scope,kind,key,value_json,confidence,"
-                " source_event,valid_from,valid_to,supersedes) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (item.get("id"), item.get("designer") or "",
-                 item.get("project") or "", item.get("scope") or "facts",
-                 item.get("kind") or "fact", item.get("key") or "",
-                 json.dumps(item.get("value"), ensure_ascii=False, default=str),
-                 (0.6 if item.get("confidence") is None
-                  else float(item.get("confidence"))),
-                 item.get("source_event") or "", float(item.get("valid_from") or 0),
-                 item.get("valid_to"), item.get("supersedes") or ""),
-            )
-            self._db.commit()
+            try:
+                self._db.execute(
+                    "INSERT INTO memory_items "
+                    "(id,designer,project,scope,kind,key,value_json,confidence,"
+                    " source_event,valid_from,valid_to,supersedes) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (item.get("id"), item.get("designer") or "",
+                     item.get("project") or "", item.get("scope") or "facts",
+                     item.get("kind") or "fact", item.get("key") or "",
+                     json.dumps(item.get("value"), ensure_ascii=False, default=str),
+                     (0.6 if item.get("confidence") is None
+                      else float(item.get("confidence"))),
+                     item.get("source_event") or "", float(item.get("valid_from") or 0),
+                     item.get("valid_to"), item.get("supersedes") or ""),
+                )
+            except sqlite3.IntegrityError as exc:
+                # 同槽位已有一条有效（多半是另一个进程抢先写入）——
+                # 抛给服务层做收敛，不能在这里静默吞掉
+                raise ConflictError(str(exc)) from exc
+            self._commit()
 
     def memory_items(self, designer: str, project: str = "", scope: str = "",
                      kind: str = "", key: str = "", active_only: bool = True,
@@ -297,7 +375,7 @@ class SqliteMemoryStore:
             else:
                 self._db.execute("UPDATE memory_items SET valid_to=? WHERE id=?",
                                  (ts, item_id))
-            self._db.commit()
+            self._commit()
 
     # ---------------- op 链 ----------------
     def append_op(self, op: Op) -> None:
@@ -319,7 +397,7 @@ class SqliteMemoryStore:
                  json.dumps(op.verdict, ensure_ascii=False),
                  1 if op.ok else 0),
             )
-            self._db.commit()
+            self._commit()
 
     def _row_to_op(self, row) -> Op:
         return Op(
@@ -361,14 +439,14 @@ class SqliteMemoryStore:
     def clear_ops(self, designer: str) -> int:
         with self._lock:
             cur = self._db.execute("DELETE FROM ops WHERE designer=?", (designer,))
-            self._db.commit()
+            self._commit()
         return cur.rowcount or 0
 
     def clear_mem(self, owner: str, designer: str) -> int:
         with self._lock:
             cur = self._db.execute(
                 "DELETE FROM memory WHERE owner=? AND designer=?", (owner, designer))
-            self._db.commit()
+            self._commit()
         return cur.rowcount or 0
 
     # ---------------- 逐句原话（到期降级） ----------------
@@ -382,7 +460,7 @@ class SqliteMemoryStore:
                  row.get("text") or "", row.get("snippet") or "", float(row.get("ts") or 0),
                  float(row.get("conf") or 0), float(row.get("dur") or 0),
                  row.get("kind") or "say"))
-            self._db.commit()
+            self._commit()
 
     def utterances(self, designer: str, days: int = 7, limit: int = 200) -> list:
         cutoff = time.time() - days * 86400
@@ -431,7 +509,7 @@ class SqliteMemoryStore:
                 "UPDATE utterances SET text='' WHERE designer=? AND ts<? "
                 "AND text!=''",  # 已清过的不再重复计数：prune 幂等
                 (designer, cutoff)).rowcount or 0
-            self._db.commit()
+            self._commit()
         return int(n1) + int(n2)
 
     # ---------------- 记忆（按 owner/designer/project 隔离） ----------------
@@ -439,7 +517,7 @@ class SqliteMemoryStore:
         """这个人的所有记忆，不分 owner。"""
         with self._lock:
             cur = self._db.execute("DELETE FROM memory WHERE designer = ?", (designer,))
-            self._db.commit()
+            self._commit()
             return cur.rowcount or 0
 
     def set_mem(self, owner, designer, project, key, value, confidence: float = 1.0) -> None:
@@ -450,7 +528,7 @@ class SqliteMemoryStore:
                 (owner, designer, _key(project), key,
                  json.dumps(value, ensure_ascii=False, default=str), confidence, time.time()),
             )
-            self._db.commit()
+            self._commit()
 
     def get_mem(self, owner, designer, project, key, default: Any = None) -> Any:
         with self._lock:

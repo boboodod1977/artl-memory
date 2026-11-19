@@ -80,39 +80,79 @@ class MemoryService:
             return None
         with self._lock:  # check-then-act 全程原子，并发下同 key 不双写
             now = float(ts if ts is not None else self._clock())
-            # 去重必须限定同 key：只按 scope+kind 查会把"别人记过同样的值"
-            # 也命中，导致第二个人的记忆被吞掉并返回第一个人的条目。
-            rows = self._items(scope=scope, kind=kind, key=key)
-            # 空 key 在后端等于"不过滤"，这里按精确 key 再筛一遍，
-            # 否则无 key 事实会去重到别人带 key 的条目上（P0-1 的变种）
-            rows = [r for r in rows if str(r.get("key") or "") == str(key or "")]
-            for row in rows:
-                if row.get("value") == value:
-                    row = dict(row)
-                    row["created"] = False
-                    return row
-            # 同 key 的旧条目可能不止一条（比如从旧系统导入的）：全部失效，
-            # supersedes 指向最近的一条（rows 按 valid_from 倒序，第一条最新）。
-            # 但只对非空 key 生效：空 key 是"无 key 事实"，不是同一个槽——
-            # 否则 import 一批无 key 事实会互相顶掉，永远只有最后一条活着。
-            supersedes = ""
-            if rows and key:
-                supersedes = str(rows[0].get("id") or "")
+            for attempt in range(3):  # 撞跨进程唯一约束时重读收敛再重试
+                # 去重必须限定同 key：只按 scope+kind 查会把"别人记过同样的值"
+                # 也命中，导致第二个人的记忆被吞掉并返回第一个人的条目。
+                rows = self._items(scope=scope, kind=kind, key=key)
+                # 空 key 在后端等于"不过滤"，这里按精确 key 再筛一遍，
+                # 否则无 key 事实会去重到别人带 key 的条目上（P0-1 的变种）
+                rows = [r for r in rows if str(r.get("key") or "") == str(key or "")]
+                dup = None
                 for row in rows:
-                    self._store.expire_memory_item(row["id"], now,
-                                                   designer=self.designer)
-            item = {
-                "id": "mem_" + uuid.uuid4().hex[:12],
-                "designer": self.designer, "project": self.project,
-                "scope": str(scope or "facts"), "kind": str(kind or "fact"),
-                "key": str(key or ""), "value": value,
-                "confidence": round(0.6 if confidence is None else float(confidence), 2),
-                "source_event": str(source or "")[:200],
-                "valid_from": now, "valid_to": None, "supersedes": supersedes,
-            }
-            self._store.add_memory_item(item)
-            item["created"] = True
-            return item
+                    if row.get("value") == value:
+                        dup = row
+                        break
+                if dup is not None:
+                    dup = dict(dup)
+                    dup["created"] = False
+                    return dup
+                # 同 key 的旧条目可能不止一条（比如从旧系统导入的）：全部失效，
+                # supersedes 指向最近的一条（rows 按 valid_from 倒序，第一条最新）。
+                # 但只对非空 key 生效：空 key 是"无 key 事实"，不是同一个槽——
+                # 否则 import 一批无 key 事实会互相顶掉，永远只有最后一条活着。
+                supersedes = ""
+                if rows and key:
+                    supersedes = str(rows[0].get("id") or "")
+                    for row in rows:
+                        self._store.expire_memory_item(row["id"], now,
+                                                       designer=self.designer)
+                item = {
+                    "id": "mem_" + uuid.uuid4().hex[:12],
+                    "designer": self.designer, "project": self.project,
+                    "scope": str(scope or "facts"), "kind": str(kind or "fact"),
+                    "key": str(key or ""), "value": value,
+                    "confidence": round(0.6 if confidence is None else float(confidence), 2),
+                    "source_event": str(source or "")[:200],
+                    "valid_from": now, "valid_to": None, "supersedes": supersedes,
+                }
+                try:
+                    self._store.add_memory_item(item)
+                except Exception as exc:
+                    # SQLite 唯一索引（同槽位只允许一条有效）被另一个进程
+                    # 抢先触发：回炉重读，按上面的去重/替代逻辑收敛。
+                    # 用异常名判断，避免服务层反过来 import 后端模块。
+                    if type(exc).__name__ == "ConflictError" and attempt < 2:
+                        continue
+                    raise
+                item["created"] = True
+                return item
+
+    def remember_many(self, items: list, scope: str = "facts",
+                      source: str = "batch") -> int:
+        """批量写入：整个批次一次落盘，返回新增条数。
+
+        逐条 remember 每条 commit 一次，5 万条要约 77 秒（瓶颈是 fsync，
+        不是 SQL）；走这个接口，SQLite 后端整批只 commit 一次。
+        后端没有 batch()（比如内存版）时退化为逐条，语义不变。
+        """
+        from contextlib import nullcontext
+        batch = getattr(self._store, "batch", None)
+        ctx = batch() if callable(batch) else nullcontext()
+        n = 0
+        with ctx:
+            for raw in items or []:
+                got = self.remember(
+                    kind=str(raw.get("kind") or "fact"),
+                    key=str(raw.get("key") or ""),
+                    value=raw.get("value"),
+                    scope=str(raw.get("scope") or scope),
+                    source=str(raw.get("source") or source),
+                    confidence=raw.get("confidence", 0.6),
+                    ts=raw.get("ts"),
+                )
+                if got and got.get("created"):
+                    n += 1
+        return n
 
     def recall(self, query: str, scope: str = "", limit: int = 5,
                kind: str = "") -> list:
@@ -127,6 +167,11 @@ class MemoryService:
         """
         if int(limit) <= 0:
             return []
+        query_str = re.sub(r"\s+", "", str(query or ""))
+        if not query_str:
+            # 空查询返回空——"你想找什么"没有答案时，
+            # 返回"最新几条"是假装理解了你的意图
+            return []
         rows = self._items(scope=scope, kind=kind, active_only=True,
                            limit=self.recall_window)
         if len(rows) >= self.recall_window:
@@ -137,20 +182,26 @@ class MemoryService:
                           RuntimeWarning, stacklevel=2)
         if not rows:
             return []
-        query_str = re.sub(r"\s+", "", str(query or ""))
-        q = _bigrams(query_str) if query_str else set()
+        q = _bigrams(query_str)
         now = float(self._clock())
         scored = []
         for row in rows:
             key = str(row.get("key") or "")
             body = "%s %s" % (key, row.get("value") or "")
             f = _bigrams(body)
-            overlap = len(q & f) if q else 1
-            # key 命中加权：完整 key 出现在查询里，或短查询落在 key 里
-            if key and query_str and (key in query_str
-                                      or (len(query_str) <= 2 and query_str in key)):
-                overlap += 0.5 if len(key) == 1 else 2 * len(_bigrams(key))
-            if q and overlap == 0:
+            overlap = len(q & f)
+            # key 命中加权：精确相等的 key 加得最多（查"周"时"周先生"
+            # 必须压过"周报""周末"）；多字 key 完整出现在查询里给强分；
+            # 单字 key 被包含只给小分保命——不被 overlap==0 筛掉，
+            # 但压不过正文的真实命中。
+            if key:
+                if key == query_str:
+                    overlap += 2 * max(1, len(_bigrams(key))) + 1
+                elif len(key) > 1 and key in query_str:
+                    overlap += 2 * len(_bigrams(key))
+                elif key in query_str or (len(query_str) <= 2 and query_str in key):
+                    overlap += 0.5
+            if overlap == 0:
                 continue
             age = max(0.0, now - float(row.get("valid_from") or now)) / 86400.0
             decay = max(0.4, 1.0 - age / 60.0)

@@ -120,6 +120,22 @@ python examples/two_people.py
 - `recall` is O(n) full-scan scoring — deliberately index-free for explainability.
   The scan window is `MemoryService(recall_window=...)`, default 10000 entries; when
   the window fills up you get a loud `RuntimeWarning`, never silent truncation.
+  For bulk imports use `remember_many(...)` (one fsync per batch, ~100x faster than
+  per-item commits) and make sure the window exceeds your total entry count.
+- **recall scores by literal token overlap; it does not paraphrase.** Rephrasing or
+  mixing languages will miss: `who pays thirty万 for the living room` does not
+  recall the Chinese entry「三十万」. If you need semantic search, layer embeddings
+  on top of `recall`.
+- Time decay floors at 0.4: very old high-confidence entries keep participating in
+  ranking, just discounted. To retire an old memory from ranking entirely, `forget`
+  it (expiry, not deletion).
+- Empty query returns an empty list — when there is no question, it does not pretend
+  to understand one.
+- Lock boundaries: `MemoryService.remember` is thread-safe via the service lock;
+  `InMemoryStore` itself is not thread-safe — use it through the service layer.
+  Multi-process writes to the same SQLite file are guarded by database-level unique
+  constraints (only one active entry per slot+key); the loser re-reads and
+  converges automatically.
 - Isolation is at the API surface. Nothing in-process is cryptographically hidden —
   if plugins are adversarial, put them behind a process boundary.
 

@@ -54,17 +54,17 @@ def test_injection_string_is_just_data(make):
     mem.remember("fact", evil, evil, confidence=0.9, ts=time.time())
     hits = mem.recall(evil)
     assert hits and hits[0]["value"] == evil
-    assert mem.recall(""), "表必须还在"
+    assert mem.recall("DROP"), "表必须还在"
 
 
-def test_recall_empty_query_ranks_all(make):
-    """空查询 = 不筛选，纯按 把握度×衰减 排序。"""
+def test_recall_empty_query_returns_empty(make):
+    """空查询返回空：没有意图时不许假装理解，返回"最新几条"是误导。"""
     s = make()
     mem = MemoryService(s, designer="d")
     mem.remember("fact", "a", "甲", confidence=0.9, ts=time.time())
     mem.remember("fact", "b", "乙", confidence=0.5, ts=time.time())
-    hits = mem.recall("")
-    assert [h["key"] for h in hits] == ["a", "b"]
+    assert mem.recall("") == []
+    assert mem.recall("   ") == []
 
 
 def test_purge_idempotent_and_surgical(make):

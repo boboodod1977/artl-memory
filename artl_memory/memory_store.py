@@ -12,6 +12,7 @@ from __future__ import annotations
 import copy
 import json
 import time
+from contextlib import contextmanager
 from typing import Any
 
 from .types import Op
@@ -243,5 +244,10 @@ class InMemoryStore:
                 "trace": n_trace - len(self._trace)}
 
     # ---- 生命周期 -------------------------------------------------------------
+    @contextmanager
+    def batch(self):
+        """内存版没有 fsync 问题，batch 只是保持两后端接口同构的空操作。"""
+        yield
+
     def close(self) -> None:
         pass
