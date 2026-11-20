@@ -1,0 +1,7 @@
+# sdist 里带上文档、示例和评测——读源码包的人需要完整上下文
+include README.zh-CN.md
+include CHANGELOG.md
+include LICENSE
+recursive-include examples *.py
+recursive-include benchmarks *.py *.md
+recursive-include tests *.py

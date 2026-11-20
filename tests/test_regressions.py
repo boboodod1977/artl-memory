@@ -484,7 +484,41 @@ def test_schema_v1_to_v2_migration():
         "SELECT name FROM sqlite_master WHERE name='uniq_active_key'").fetchone()
     assert idx, "唯一索引必须建好"
     v = _sq.connect(str(tmp)).execute("PRAGMA user_version").fetchone()[0]
-    assert v == 2
+    assert v == 3, "迁移终点必须是最新 schema 版本，得到 %d" % v
+    s2.close()
+
+
+def test_schema_v2_valid_to_zero_normalized():
+    """v2 → v3：valid_to=0 的历史行算有效却不受唯一索引保护（双活漏洞）。
+
+    造一个 v2 状态的库：同槽一行 valid_to=0（历史写法）加一行 NULL
+    （新写法），重开后必须收敛到一条有效，且库里不再有 valid_to=0。
+    """
+    import sqlite3 as _sq
+    tmp = Path(tempfile.mkdtemp()) / "v2.db"
+    s = SqliteMemoryStore(tmp)
+    MemoryService(s, designer="d").remember("fact", "预算", "四十万", ts=2.0)
+    # 手工塞一行历史写法的 valid_to=0（读取侧算有效，却不在唯一索引里），
+    # 再把库拨回 v2——模拟老库带着双活隐患升级
+    s._db.execute(
+        "INSERT INTO memory_items (id,designer,project,scope,kind,key,"
+        "value_json,confidence,source_event,valid_from,valid_to,supersedes) "
+        "VALUES ('zero_row','d','','facts','fact','预算','\"三十万\"',0.6,'',1,0,'')")
+    s._db.execute("PRAGMA user_version=2")
+    s._db.commit()
+    s.close()
+    # 重开触发 v2 → v3：0 行和新行先收敛，再归一
+    s2 = SqliteMemoryStore(tmp)
+    mem = MemoryService(s2, designer="d")
+    alive = mem._items(key="预算")
+    assert len(alive) == 1, "0 行和 NULL 行双活必须收敛: %r" % [
+        (r["value"], r["valid_to"]) for r in
+        mem._items(key="预算", active_only=False)]
+    zeros = s2._db.execute(
+        "SELECT COUNT(*) FROM memory_items WHERE valid_to=0").fetchone()[0]
+    assert zeros == 0, "v3 之后库里不该再有 valid_to=0"
+    v = _sq.connect(str(tmp)).execute("PRAGMA user_version").fetchone()[0]
+    assert v == 3
     s2.close()
 
 

@@ -2,6 +2,26 @@
 
 本项目遵循语义化版本。0.x 阶段： minor 可能含不兼容变更，patch 只修 bug。
 
+## [0.4.1] - 2026-11-20
+
+发布前第三轮外部评审（88/100）驱动的合规修复。
+
+### 修复
+
+- **schema v3**：`valid_to=0` 的历史行读取侧算有效、却不在唯一索引的保护
+  范围里，同槽可能双活。迁移时先按"0 也算有效"收敛再把 0 归一成 NULL；
+  新库直接建 v3。正常使用碰不到，但评审说得对——有效态只该有一种写法。
+
+### 合规
+
+- LICENSE 版权行替换模板占位符（Copyright 2026 ARTL family）。
+- 中文 README 去掉私有产品名；修正"Mem0/Letta/Zep 都是单用户"的过界表述
+  （它们能按 user_id 分区，做不到的是同一段对话里多人原话分开记账）。
+- sdist 补 MANIFEST.in：中文 README、CHANGELOG、examples、benchmarks、tests
+  全部进包。
+- pyproject 补 Python 3.11/3.12/3.13 分类器；仓库加 GitHub topics。
+- 仓库级 git 邮箱切换为 GitHub noreply（历史提交里的邮箱不回溯改写）。
+
 ## [0.4.0] - 2026-11-19
 
 GROK 路线图的第三步：把"可信"从口号变成可交付物。

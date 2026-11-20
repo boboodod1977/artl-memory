@@ -106,21 +106,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS uniq_active_keyless
 
 
 def _dedupe_active(db) -> None:
-    """v1 → v2：同槽位（designer/project/scope/kind/key）可能有多条有效，
-    每组只留 rowid 最大（最后写入）的一条，其余标记失效。"""
+    """同槽位（designer/project/scope/kind/key）可能有多条有效，
+    每组只留 rowid 最大（最后写入）的一条，其余标记失效。
+    有效口径含 valid_to=0 的历史行——v3 之前 0 被读取侧当有效，
+    收敛时不带上它会漏掉一组双活。"""
     now = time.time()
     db.execute("""
         UPDATE memory_items SET valid_to=?
-        WHERE valid_to IS NULL AND key != '' AND rowid NOT IN (
+        WHERE (valid_to IS NULL OR valid_to=0) AND key != '' AND rowid NOT IN (
             SELECT MAX(rowid) FROM memory_items
-            WHERE valid_to IS NULL AND key != ''
+            WHERE (valid_to IS NULL OR valid_to=0) AND key != ''
             GROUP BY designer, project, scope, kind, key)
     """, (now,))
     db.execute("""
         UPDATE memory_items SET valid_to=?
-        WHERE valid_to IS NULL AND key = '' AND rowid NOT IN (
+        WHERE (valid_to IS NULL OR valid_to=0) AND key = '' AND rowid NOT IN (
             SELECT MAX(rowid) FROM memory_items
-            WHERE valid_to IS NULL AND key = ''
+            WHERE (valid_to IS NULL OR valid_to=0) AND key = ''
             GROUP BY designer, project, scope, kind, value_json)
     """, (now,))
 
@@ -201,12 +203,23 @@ class SqliteMemoryStore:
                 if v == 0:
                     db.executescript(SCHEMA_V2)
                     db.execute("PRAGMA user_version=2")
-                elif v == 1:
+                    v = 2
+                if v == 1:
                     # v1 → v2：唯一索引上线前，先把历史遗留的同槽多条有效
                     # 收敛成每组只留最新的一条，其余标记失效
                     _dedupe_active(db)
                     db.executescript(SCHEMA_V2)
                     db.execute("PRAGMA user_version=2")
+                    v = 2
+                if v == 2:
+                    # v2 → v3：valid_to=0 的历史行读取侧算有效，却不在唯一
+                    # 索引的保护范围里（索引只覆盖 IS NULL），同槽可能双活。
+                    # 先按"0 也算有效"的口径收敛，再把 0 归一成 NULL——
+                    # 从此有效态只有一种写法，读取侧的 0 兼容成无害冗余。
+                    _dedupe_active(db)
+                    db.execute("UPDATE memory_items SET valid_to=NULL"
+                               " WHERE valid_to=0")
+                    db.execute("PRAGMA user_version=3")
                 db.commit()
                 return db
             except sqlite3.OperationalError as exc:
