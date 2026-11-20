@@ -69,6 +69,11 @@ Be fair to each of them:
 Most agent memory systems are **single-user** models: one user, one profile.
 artl-memory was a multi-person model from day one:
 
+- **No headcount cap**: per-person ledgers mean recalling for 100 people costs the
+  same as for 1 — everyone only scans their own books. Measured: 100 people ×
+  200 entries (20k rows), median recall 0.4ms, zero isolation violations
+  (Windows, Python 3.14)
+
 - **Per-person isolation**: 王强's utterances never leak into 李四's recall; skills and
   plugins only see their own slot through `MemView`, which holds no store handle
   (same-process introspection can still dig — for hostile code, use process isolation)
