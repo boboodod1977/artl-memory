@@ -20,6 +20,10 @@ artl-memory 从生产环境的自研助理中抽出。它不做"总结你的画�
 pip install artl-memory
 ```
 
+![会议演示 —— 三个人，一个记忆库](https://raw.githubusercontent.com/boboodod1977/artl-memory/main/assets/demo.gif)
+
+*上面每一帧都是 [`examples/meeting_demo.py`](examples/meeting_demo.py) 的真实运行——含断言。25 秒，零摆拍。*
+
 ## 该选哪个记忆层？
 
 来看记忆库的人，参照物几乎都是 Mem0（6 万多星），绕不开，那就直接摆开说。

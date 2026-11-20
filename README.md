@@ -24,6 +24,10 @@ evidence chain stays in place.
 pip install artl-memory
 ```
 
+![meeting demo — three people, one memory base](https://raw.githubusercontent.com/boboodod1977/artl-memory/main/assets/demo.gif)
+
+*Every frame above is a real run of [`examples/meeting_demo.py`](examples/meeting_demo.py) — assertions included. 25 seconds, no staging.*
+
 ## Which memory layer should you pick?
 
 Everyone arriving here has Mem0 (~60k★) as their reference point, so let's be direct
