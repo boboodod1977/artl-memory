@@ -20,6 +20,12 @@ jobs:
       - run: python tests/test_adversarial.py
       - run: python tests/test_regressions.py
       - run: python examples/two_people.py
+      # 演示脚本必须真能跑通——README 的 GIF 是它录的，不是摆拍
+      - run: python examples/meeting_demo.py --fast
+      # MCP 挂件：装上可选依赖再测协议层（含真 stdio 握手）
+      - run: |
+          python -m pip install ".[mcp]"
+          python tests/test_mcp_server.py
 
   package:
     runs-on: ubuntu-latest

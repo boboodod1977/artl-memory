@@ -234,6 +234,21 @@ def test_export_designer(make):
     assert "别人的" not in blob, "导出不许带出别人的数据"
 
 
+def test_designers(make):
+    """花名册：五张表出现过的 designer 都在名单里，purge 后消失。"""
+    s = make()
+    assert s.designers() == [], "空库的花名册必须是空的"
+    s.add_utterance("alice", {"id": "u1", "text": "hi", "ts": time.time()})
+    s.set_mem("core", "bob", None, "k", "v")
+    s.append_op(_op("carol", "...", time.time()))
+    s.append_trace("dave", {"id": "t1", "ts": time.time(), "steps": []})
+    MemoryService(s, designer="erin").remember("fact", "k", "v")
+    assert s.designers() == ["alice", "bob", "carol", "dave", "erin"]
+    s.purge_designer("alice")
+    assert s.designers() == ["bob", "carol", "dave", "erin"], \
+        "被抹掉的人不许留在花名册里"
+
+
 def main():
     n_pass = n_fail = 0
     backend_tests = (test_mem_isolation, test_op_chain, test_utterances_prune,
@@ -241,7 +256,7 @@ def main():
                      test_count_utterances_none_means_all, test_purge_designer,
                      test_service_evidence_chain, test_service_decay_prefers_fresh,
                      test_recall_hits_single_char_key, test_per_key_latest,
-                     test_export_designer)
+                     test_export_designer, test_designers)
     for name, make in _BACKENDS:
         for fn in backend_tests:
             try:

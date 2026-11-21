@@ -157,6 +157,31 @@ mem2 = MemoryService(store, designer="王强",
 - `pip install artl-memory[semantic]`; without it the core is pure stdlib and
   behavior is byte-identical
 
+## MCP server: plug into Claude / Cursor (0.5+)
+
+Everything above also comes as an [MCP](https://modelcontextprotocol.io) server —
+one stanza in Claude Desktop / Cursor settings and your assistant gets a real
+multi-person memory:
+
+```json
+{
+  "mcpServers": {
+    "artl-memory": {
+      "command": "uvx",
+      "args": ["--from", "artl-memory[mcp]", "artl-memory-mcp",
+               "--db", "/abs/path/memory.db"]
+    }
+  }
+}
+```
+
+Eight tools: `remember`, `recall`, `recall_all` (ask the whole room — every hit
+tagged with its person), `list_people`, `evidence_chain`, `forget`,
+`purge_person` (physical, byte-verifiable), `export_person`. The core stays
+zero-dependency: the `mcp` package only arrives with the extra. The protocol
+layer is pinned by a real stdio handshake test (spawned subprocess, initialize,
+call) — not a mock.
+
 ## Evidence chains & GDPR (0.4+)
 
 ```python

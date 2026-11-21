@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "artl-memory"
-version = "0.4.1"
+version = "0.5.0"
 description = "The multi-person memory layer for agents: verbatim utterances, per-person isolation, evidence chain, confidence. It remembers everyone in the room — separately."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -31,6 +31,12 @@ dependencies = []
 # 可选语义召回：本地小模型（bge-small-zh）或任何 embedding API，
 # 接进 MemoryService(recall_scorer=...)。不装就是纯零依赖。
 semantic = ["fastembed>=0.4"]
+# MCP 挂件：把记忆库挂进 Claude Desktop / Cursor 等客户端。
+mcp = ["mcp>=1.2"]
+
+[project.scripts]
+# 装完 mcp extra 后可直接用：artl-memory-mcp --db /path/memory.db
+artl-memory-mcp = "artl_memory.contrib.mcp_server:main"
 
 [project.urls]
 Homepage = "https://github.com/boboodod1977/artl-memory"

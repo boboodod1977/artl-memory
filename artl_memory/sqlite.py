@@ -321,6 +321,15 @@ class SqliteMemoryStore:
                 "tables": tables,
                 "counts": {k: len(v) for k, v in tables.items()}}
 
+    # ---------------- 花名册：这个库里记了哪些人 ----------------
+    def designers(self) -> list[str]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT designer FROM ops UNION SELECT designer FROM utterances "
+                "UNION SELECT designer FROM memory UNION SELECT designer FROM trace "
+                "UNION SELECT designer FROM memory_items").fetchall()
+        return sorted(str(r[0]) for r in rows if r[0])
+
     def close(self) -> None:
         with self._lock:
             if self._closed:

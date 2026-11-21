@@ -19,7 +19,7 @@ from .service import MemoryItem, MemoryService
 from .sqlite import SqliteMemoryStore
 from .types import Op
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"
 
 __all__ = [
     "InMemoryStore",

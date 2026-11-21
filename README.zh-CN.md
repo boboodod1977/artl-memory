@@ -133,6 +133,28 @@ mem2 = MemoryService(store, designer="王强",
 - scorer 挂了（API 宕了）：警告 + 退化纯字词打分，召回不跟着死
 - `pip install artl-memory[semantic]`；不装就是纯零依赖，行为一字不变
 
+## MCP server：接进 Claude / Cursor（0.5+）
+
+上面的一切也有 [MCP](https://modelcontextprotocol.io) 服务器形态——
+Claude Desktop / Cursor 配置里加一段，你的助手就有了真的多人记忆：
+
+```json
+{
+  "mcpServers": {
+    "artl-memory": {
+      "command": "uvx",
+      "args": ["--from", "artl-memory[mcp]", "artl-memory-mcp",
+               "--db", "/abs/path/memory.db"]
+    }
+  }
+}
+```
+
+八个工具：`remember`、`recall`、`recall_all`（问全屋，每条标明是谁的）、
+`list_people`、`evidence_chain`、`forget`、`purge_person`（物理删除，
+字节级可验）、`export_person`。核心依旧零依赖——`mcp` 包只随 extra 进来。
+协议层用真 stdio 握手测试钉死（起子进程、初始化、调用），不是 mock。
+
 ## 证据链溯源与 GDPR（0.4+）
 
 ```python

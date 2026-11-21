@@ -289,6 +289,16 @@ class InMemoryStore:
                 "tables": tables,
                 "counts": {k: len(v) for k, v in tables.items()}}
 
+    # ---- 花名册：这个库里记了哪些人 ------------------------------------------
+    def designers(self) -> list[str]:
+        out = {o.designer for o in self._ops}
+        out |= {slot[1] for slot in self._mem}
+        out |= {str(r.get("designer") or "") for r in self._utt}
+        out |= {str(r.get("designer") or "") for r in self._trace}
+        out |= {str(v.get("designer") or "") for v in self._items.values()}
+        out.discard("")  # 空串不是人名，是脏数据
+        return sorted(out)
+
     # ---- 生命周期 -------------------------------------------------------------
     @contextmanager
     def batch(self):

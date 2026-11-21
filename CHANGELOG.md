@@ -2,6 +2,28 @@
 
 本项目遵循语义化版本。0.x 阶段： minor 可能含不兼容变更，patch 只修 bug。
 
+## [0.5.0] - 2026-11-21
+
+MCP 挂件：Claude Desktop / Cursor 一段配置接入。
+
+### 新增
+
+- **`artl-memory[mcp]` extra + `artl-memory-mcp` 命令**：八个工具
+  （`remember` / `recall` / `recall_all` / `list_people` / `evidence_chain`
+  / `forget` / `purge_person` / `export_person`），默认 stdio 传输。
+  核心依旧零依赖——`mcp` 包只随挂件安装。
+- **`store.designers()`**：五张表的花名册，"你都记得谁"成为一等接口。
+  Port、内存、SQLite 三处同步实现，双后端一致性测试钉死。
+- `recall_all` 跨人召回：每条结果带 `person` 字段，按公开因子还原总分排序。
+
+### 测试
+
+- 总计 116 项：回归 68 + 一致性 28 + 对抗 10 + MCP 10。
+- MCP 协议层测试含真 stdio 握手（起 server 子进程 → initialize →
+  调用 remember/recall），不是 mock。
+- CI 新增两道门：演示脚本 `meeting_demo.py --fast` 必跑（README 的 GIF
+  由它实录）；MCP 测试装上 extra 后随矩阵运行。
+
 ## [0.4.1] - 2026-11-20
 
 发布前第三轮外部评审（88/100）驱动的合规修复。
