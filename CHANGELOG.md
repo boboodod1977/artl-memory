@@ -12,6 +12,7 @@ MCP 挂件：Claude Desktop / Cursor 一段配置接入。
   （`remember` / `recall` / `recall_all` / `list_people` / `evidence_chain`
   / `forget` / `purge_person` / `export_person`），默认 stdio 传输。
   核心依旧零依赖——`mcp` 包只随挂件安装。
+  兼容 mcp 1.x（FastMCP）与 2.x（MCPServer）两代 SDK，双代各跑一遍测试。
 - **`store.designers()`**：五张表的花名册，"你都记得谁"成为一等接口。
   Port、内存、SQLite 三处同步实现，双后端一致性测试钉死。
 - `recall_all` 跨人召回：每条结果带 `person` 字段，按公开因子还原总分排序。

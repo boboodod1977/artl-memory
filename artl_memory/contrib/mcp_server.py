@@ -148,7 +148,12 @@ def tool_export_person(base: MemoryBase, person: str) -> dict:
 
 def create_app(base: MemoryBase, name: str = "artl-memory"):
     try:
-        from mcp.server.fastmcp import FastMCP
+        # mcp 1.x：FastMCP。mcp 2.x 改名为 MCPServer（接口形状相同），
+        # 两代都支持——用户的客户端环境装哪代，不该由我们说了算。
+        try:
+            from mcp.server.fastmcp import FastMCP
+        except ModuleNotFoundError:
+            from mcp.server.mcpserver import MCPServer as FastMCP
     except ImportError as exc:  # pragma: no cover - 只在没装 extra 时触发
         raise SystemExit(
             "artl-memory 的 MCP 挂件需要 mcp 包：pip install \"artl-memory[mcp]\""

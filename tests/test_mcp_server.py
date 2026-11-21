@@ -183,7 +183,11 @@ class ProtocolTests(unittest.TestCase):
                     return result
 
         result = asyncio.run(run())
-        self.assertFalse(result.isError, "recall 调用失败: %r" % (result,))
+        # mcp 1.x 是 isError，2.x 改蛇形 is_error——两代都兼容
+        is_error = getattr(result, "isError", None)
+        if is_error is None:
+            is_error = getattr(result, "is_error", False)
+        self.assertFalse(is_error, "recall 调用失败: %r" % (result,))
         text = "".join(getattr(c, "text", "") for c in result.content)
         self.assertIn("300k", text)
         self.assertIn("utterance:wq-001", text,
