@@ -3,5 +3,5 @@ include README.zh-CN.md
 include CHANGELOG.md
 include LICENSE
 recursive-include examples *.py
-recursive-include benchmarks *.py *.md
+recursive-include benchmarks *.py *.md *.json
 recursive-include tests *.py

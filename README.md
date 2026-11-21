@@ -196,8 +196,11 @@ must be empty".
 The **public recall benchmark** lives in [benchmarks/](benchmarks/): 3 people,
 12 writes, 10 queries — all pinned in the script, judged by substring match (the
 referee is never a contestant), with literal-hit / correction-recency /
-isolation / paraphrase scored separately. A Mem0 comparison adapter is one
-flag away.
+isolation / paraphrase scored separately. Mem0 2.2.1 measured head-to-head
+(infer=False, local bge-small-zh; its LLM endpoint blackholed to *prove* zero
+LLM calls): correction-recency 0/1 — after a correction it still serves the
+old value first — vs 1/1 here. Raw details archived in
+[benchmarks/results/](benchmarks/results/).
 
 ## Boundaries (stated plainly)
 

@@ -1,0 +1,396 @@
+[
+  {
+    "adapter": "artl-memory 0.5.0（默认字词）",
+    "ts": "2026-11-21 19:48",
+    "top1": "9/10",
+    "per_kind": {
+      "字面命中": "3/3",
+      "改口时效": "1/1",
+      "按人隔离": "3/3",
+      "换说法": "2/3"
+    },
+    "violations": 0,
+    "details": [
+      {
+        "q": "客厅预算多少",
+        "person": "王强",
+        "kind": "字面命中",
+        "expect": "三十五万",
+        "got": [
+          "改一下，客厅预算三十五万"
+        ],
+        "hit": true,
+        "violations": []
+      },
+      {
+        "q": "王强的预算",
+        "person": "王强",
+        "kind": "改口时效",
+        "expect": "三十五万",
+        "got": [
+          "改一下，客厅预算三十五万"
+        ],
+        "hit": true,
+        "violations": []
+      },
+      {
+        "q": "预算",
+        "person": "李四",
+        "kind": "按人隔离",
+        "expect": "八万",
+        "got": [
+          "书房预算八万"
+        ],
+        "hit": true,
+        "violations": []
+      },
+      {
+        "q": "口味",
+        "person": "李四",
+        "kind": "按人隔离",
+        "expect": "不吃辣",
+        "got": [
+          "我不吃辣"
+        ],
+        "hit": true,
+        "violations": []
+      },
+      {
+        "q": "行程",
+        "person": "王强",
+        "kind": "字面命中",
+        "expect": "杭州",
+        "got": [
+          "下周三去杭州出差"
+        ],
+        "hit": true,
+        "violations": []
+      },
+      {
+        "q": "装修大概要花多少钱",
+        "person": "王强",
+        "kind": "换说法",
+        "expect": "三十五万",
+        "got": [],
+        "hit": false,
+        "violations": []
+      },
+      {
+        "q": "能吃辣吗",
+        "person": "李四",
+        "kind": "换说法",
+        "expect": "不吃辣",
+        "got": [
+          "我不吃辣"
+        ],
+        "hit": true,
+        "violations": []
+      },
+      {
+        "q": "出差去哪",
+        "person": "王强",
+        "kind": "换说法",
+        "expect": "杭州",
+        "got": [
+          "下周三去杭州出差"
+        ],
+        "hit": true,
+        "violations": []
+      },
+      {
+        "q": "宠物",
+        "person": "李四",
+        "kind": "字面命中",
+        "expect": "两只猫",
+        "got": [
+          "家里养了两只猫"
+        ],
+        "hit": true,
+        "violations": []
+      },
+      {
+        "q": "预算",
+        "person": "赵六",
+        "kind": "按人隔离",
+        "expect": "一百万",
+        "got": [
+          "全屋预算一百万"
+        ],
+        "hit": true,
+        "violations": []
+      }
+    ]
+  },
+  {
+    "adapter": "artl-memory 0.5.0 (+toy-scorer)",
+    "ts": "2026-11-21 19:48",
+    "top1": "10/10",
+    "per_kind": {
+      "字面命中": "3/3",
+      "改口时效": "1/1",
+      "按人隔离": "3/3",
+      "换说法": "3/3"
+    },
+    "violations": 0,
+    "details": [
+      {
+        "q": "客厅预算多少",
+        "person": "王强",
+        "kind": "字面命中",
+        "expect": "三十五万",
+        "got": [
+          "改一下，客厅预算三十五万"
+        ],
+        "hit": true,
+        "violations": []
+      },
+      {
+        "q": "王强的预算",
+        "person": "王强",
+        "kind": "改口时效",
+        "expect": "三十五万",
+        "got": [
+          "改一下，客厅预算三十五万"
+        ],
+        "hit": true,
+        "violations": []
+      },
+      {
+        "q": "预算",
+        "person": "李四",
+        "kind": "按人隔离",
+        "expect": "八万",
+        "got": [
+          "书房预算八万"
+        ],
+        "hit": true,
+        "violations": []
+      },
+      {
+        "q": "口味",
+        "person": "李四",
+        "kind": "按人隔离",
+        "expect": "不吃辣",
+        "got": [
+          "我不吃辣"
+        ],
+        "hit": true,
+        "violations": []
+      },
+      {
+        "q": "行程",
+        "person": "王强",
+        "kind": "字面命中",
+        "expect": "杭州",
+        "got": [
+          "下周三去杭州出差"
+        ],
+        "hit": true,
+        "violations": []
+      },
+      {
+        "q": "装修大概要花多少钱",
+        "person": "王强",
+        "kind": "换说法",
+        "expect": "三十五万",
+        "got": [
+          "改一下，客厅预算三十五万"
+        ],
+        "hit": true,
+        "violations": []
+      },
+      {
+        "q": "能吃辣吗",
+        "person": "李四",
+        "kind": "换说法",
+        "expect": "不吃辣",
+        "got": [
+          "我不吃辣"
+        ],
+        "hit": true,
+        "violations": []
+      },
+      {
+        "q": "出差去哪",
+        "person": "王强",
+        "kind": "换说法",
+        "expect": "杭州",
+        "got": [
+          "下周三去杭州出差"
+        ],
+        "hit": true,
+        "violations": []
+      },
+      {
+        "q": "宠物",
+        "person": "李四",
+        "kind": "字面命中",
+        "expect": "两只猫",
+        "got": [
+          "家里养了两只猫",
+          "书房预算八万"
+        ],
+        "hit": true,
+        "violations": []
+      },
+      {
+        "q": "预算",
+        "person": "赵六",
+        "kind": "按人隔离",
+        "expect": "一百万",
+        "got": [
+          "全屋预算一百万"
+        ],
+        "hit": true,
+        "violations": []
+      }
+    ]
+  },
+  {
+    "adapter": "Mem0 2.2.1（infer=False 裸向量，bge-small-zh）",
+    "ts": "2026-11-21 19:48",
+    "top1": "7/10",
+    "per_kind": {
+      "字面命中": "2/3",
+      "改口时效": "0/1",
+      "按人隔离": "3/3",
+      "换说法": "2/3"
+    },
+    "violations": 2,
+    "details": [
+      {
+        "q": "客厅预算多少",
+        "person": "王强",
+        "kind": "字面命中",
+        "expect": "三十五万",
+        "got": [
+          "客厅装修预算是三十万",
+          "改一下，客厅预算三十五万",
+          "下周三去杭州出差"
+        ],
+        "hit": false,
+        "violations": [
+          "三十万"
+        ]
+      },
+      {
+        "q": "王强的预算",
+        "person": "王强",
+        "kind": "改口时效",
+        "expect": "三十五万",
+        "got": [
+          "客厅装修预算是三十万",
+          "改一下，客厅预算三十五万",
+          "下周三去杭州出差"
+        ],
+        "hit": false,
+        "violations": [
+          "三十万"
+        ]
+      },
+      {
+        "q": "预算",
+        "person": "李四",
+        "kind": "按人隔离",
+        "expect": "八万",
+        "got": [
+          "书房预算八万",
+          "家里养了两只猫",
+          "我不吃辣"
+        ],
+        "hit": true,
+        "violations": []
+      },
+      {
+        "q": "口味",
+        "person": "李四",
+        "kind": "按人隔离",
+        "expect": "不吃辣",
+        "got": [
+          "我不吃辣",
+          "家里养了两只猫",
+          "书房预算八万"
+        ],
+        "hit": true,
+        "violations": []
+      },
+      {
+        "q": "行程",
+        "person": "王强",
+        "kind": "字面命中",
+        "expect": "杭州",
+        "got": [
+          "下周三去杭州出差",
+          "改一下，客厅预算三十五万",
+          "客厅装修预算是三十万"
+        ],
+        "hit": true,
+        "violations": []
+      },
+      {
+        "q": "装修大概要花多少钱",
+        "person": "王强",
+        "kind": "换说法",
+        "expect": "三十五万",
+        "got": [
+          "客厅装修预算是三十万",
+          "改一下，客厅预算三十五万",
+          "下周三去杭州出差"
+        ],
+        "hit": false,
+        "violations": []
+      },
+      {
+        "q": "能吃辣吗",
+        "person": "李四",
+        "kind": "换说法",
+        "expect": "不吃辣",
+        "got": [
+          "我不吃辣",
+          "家里养了两只猫",
+          "书房预算八万"
+        ],
+        "hit": true,
+        "violations": []
+      },
+      {
+        "q": "出差去哪",
+        "person": "王强",
+        "kind": "换说法",
+        "expect": "杭州",
+        "got": [
+          "下周三去杭州出差",
+          "改一下，客厅预算三十五万",
+          "客厅装修预算是三十万"
+        ],
+        "hit": true,
+        "violations": []
+      },
+      {
+        "q": "宠物",
+        "person": "李四",
+        "kind": "字面命中",
+        "expect": "两只猫",
+        "got": [
+          "家里养了两只猫",
+          "我不吃辣",
+          "书房预算八万"
+        ],
+        "hit": true,
+        "violations": []
+      },
+      {
+        "q": "预算",
+        "person": "赵六",
+        "kind": "按人隔离",
+        "expect": "一百万",
+        "got": [
+          "全屋预算一百万",
+          "香菜多放"
+        ],
+        "hit": true,
+        "violations": []
+      }
+    ]
+  }
+]

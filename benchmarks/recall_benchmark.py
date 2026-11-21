@@ -118,36 +118,67 @@ def _toy_scorer():
 class Mem0Adapter:
     """Mem0 对照：只有显式 --with-mem0 才跑。
 
-    公平口径：mem0 官方 SDK 默认配置（抽取式记忆是它的设计，不是
-    我们刁难它）；版本号打印在结果里。需要它自己的依赖和模型 key，
-    没配好就报错退出，不静默跳过。
+    两种模式，标签里写死是哪种：
+    - **抽取模式**（它的设计默认）：设 MEM0_BENCH_LLM_API_KEY（可选
+      MEM0_BENCH_LLM_BASE_URL / MEM0_BENCH_LLM_MODEL）就走 LLM 抽取，
+      任何 OpenAI 兼容端点都行。
+    - **裸向量模式**（infer=False）：没 key 时的兜底。LLM 端点被故意
+      指向 127.0.0.1:1 这个黑洞——它敢发一次请求就立刻报错，用这个
+      证明整条链路零 LLM 调用。这一行测的是它的存储+检索栈。
+    embedder 用本地 fastembed（bge-small-zh-v1.5），向量库本地 qdrant，
+    版本号打印在结果里。依赖没装好就报错退出，不静默跳过。
     """
 
-    name = "Mem0（SDK 默认配置）"
-
     def __init__(self):
+        import os
         try:
             from mem0 import Memory
         except ImportError as exc:
-            raise SystemExit("--with-mem0 需要 pip install mem0ai：%s" % exc)
-        self._m = Memory()  # 默认配置：OpenAI 抽取，需要 OPENAI_API_KEY
-        self._version = None
+            raise SystemExit("--with-mem0 需要 pip install mem0ai fastembed：%s" % exc)
+        tmp = tempfile.mkdtemp(prefix="mem0-bench-")
+        api_key = os.environ.get("MEM0_BENCH_LLM_API_KEY", "").strip()
+        self._infer = bool(api_key)
+        llm_cfg = {
+            "provider": "openai",
+            "config": {
+                "api_key": api_key or "sk-blackhole",
+                # 没 key 时指向黑洞：任何一次 LLM 调用都会立刻炸出来
+                "openai_base_url": os.environ.get(
+                    "MEM0_BENCH_LLM_BASE_URL",
+                    "https://api.openai.com/v1" if api_key else "http://127.0.0.1:1"),
+                "model": os.environ.get("MEM0_BENCH_LLM_MODEL",
+                                        "gpt-4o-mini" if api_key else "unused"),
+                "temperature": 0,
+            },
+        }
+        self._m = Memory.from_config({
+            "llm": llm_cfg,
+            "embedder": {"provider": "fastembed",
+                         "config": {"model": "BAAI/bge-small-zh-v1.5"}},
+            "vector_store": {"provider": "qdrant",
+                             "config": {"collection_name": "bench",
+                                        "path": tmp,
+                                        "embedding_model_dims": 512}},
+        })
+        import importlib.metadata
         try:
-            import importlib.metadata
             self._version = importlib.metadata.version("mem0ai")
         except Exception:
             self._version = "unknown"
 
     def add(self, person, key, text, source, ts):
-        self._m.add(text, user_id=person, metadata={"key": key, "ts": ts})
+        self._m.add(text, user_id=person, infer=self._infer,
+                    metadata={"key": key, "ts": ts, "source": source})
 
     def recall(self, person, query, limit=3):
-        res = self._m.search(query, user_id=person, limit=limit)
+        # mem0 2.x：按人过滤走 filters={"user_id": ...}，不再是顶层参数
+        res = self._m.search(query, filters={"user_id": person}, top_k=limit)
         rows = res.get("results", res) if isinstance(res, dict) else res
         return [str(r.get("memory", r)) for r in rows][:limit]
 
     def label(self):
-        return "Mem0 %s（默认配置）" % self._version
+        mode = "LLM 抽取" if self._infer else "infer=False 裸向量"
+        return "Mem0 %s（%s，bge-small-zh）" % (self._version, mode)
 
 
 def run(adapter):
